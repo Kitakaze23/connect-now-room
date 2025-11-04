@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Card } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
+import JoinRequestDialog from "./JoinRequestDialog";
+import { useNavigate } from "react-router-dom";
 
 interface VideoCallProps {
   roomId: string;
@@ -16,8 +18,13 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [isRemoteConnected, setIsRemoteConnected] = useState(false);
   const [isMediaReady, setIsMediaReady] = useState(false);
+  const [showJoinRequest, setShowJoinRequest] = useState(false);
+  const [pendingJoinerId, setPendingJoinerId] = useState<string | null>(null);
+  const [isApproved, setIsApproved] = useState(false);
+  const [isOrganizer, setIsOrganizer] = useState(false);
 
   // Initialize media stream
   useEffect(() => {
@@ -162,22 +169,35 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
           if (participants.length < 2) {
             console.log('⏳ Waiting for second participant...');
             myRole = 'waiting';
+            const sortedParticipants = participants.sort();
+            setIsOrganizer(sortedParticipants[0] === clientId);
             return;
           }
           
-          // First participant (by clientId order) becomes the caller
+          // First participant (by clientId order) becomes the caller/organizer
           const sortedParticipants = participants.sort();
           const isCaller = sortedParticipants[0] === clientId;
           myRole = isCaller ? 'caller' : 'callee';
+          setIsOrganizer(isCaller);
           
           console.log('🎯 My Role:', myRole, '| Participants:', sortedParticipants);
           
-          // If we're the caller and haven't sent offer yet, create and send it
-          if (isCaller && !isOfferSent) {
-            console.log('📞 Creating offer as CALLER');
+          // If we're the callee (second participant), send join request
+          if (!isCaller && !isApproved) {
+            console.log('🔔 Sending join request to organizer');
+            channel.send({
+              type: 'broadcast',
+              event: 'join_request',
+              payload: { joinerId: clientId }
+            });
+            return;
+          }
+          
+          // If we're the caller and connection is approved, create offer
+          if (isCaller && isApproved && !isOfferSent) {
+            console.log('📞 Creating offer as CALLER (approved)');
             isOfferSent = true;
             
-            // Small delay to ensure both peers are ready
             setTimeout(async () => {
               try {
                 const offer = await peerConnection.createOffer({
@@ -200,6 +220,32 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
             }, 1000);
           } else {
             console.log('👂 Ready to receive offer as CALLEE');
+          }
+        })
+        .on('broadcast', { event: 'join_request' }, ({ payload }) => {
+          if (isOrganizer) {
+            console.log('🔔 Received join request from:', payload.joinerId);
+            setPendingJoinerId(payload.joinerId);
+            setShowJoinRequest(true);
+          }
+        })
+        .on('broadcast', { event: 'join_response' }, ({ payload }) => {
+          if (payload.joinerId === clientId) {
+            console.log('📨 Received join response:', payload.approved);
+            if (payload.approved) {
+              setIsApproved(true);
+              toast({
+                title: "Подключение разрешено",
+                description: "Организатор разрешил подключение",
+              });
+            } else {
+              toast({
+                title: "Подключение отклонено",
+                description: "Организатор отклонил запрос на подключение",
+                variant: "destructive",
+              });
+              setTimeout(() => navigate('/'), 2000);
+            }
           }
         })
         .on(
@@ -230,8 +276,8 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
             console.log('📥 Received signaling message:', message.type, 'from:', message.data?.clientId);
             
             try {
-              if (message.type === "offer" && myRole === 'callee') {
-                console.log('📨 Processing offer as CALLEE');
+              if (message.type === "offer" && myRole === 'callee' && isApproved) {
+                console.log('📨 Processing offer as CALLEE (approved)');
                 const offerDesc = new RTCSessionDescription(message.data.offer);
                 await peerConnection.setRemoteDescription(offerDesc);
                 console.log('✅ Remote description set (offer)');
@@ -284,10 +330,53 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
     };
 
     setupWebRTC();
-  }, [roomId, onConnectionChange, isMediaReady]);
+  }, [roomId, onConnectionChange, isMediaReady, isApproved]);
+
+  const handleAcceptJoin = async () => {
+    setShowJoinRequest(false);
+    setIsApproved(true);
+    
+    const channel = supabase.channel(`room:${roomId}`);
+    await channel.subscribe();
+    
+    channel.send({
+      type: 'broadcast',
+      event: 'join_response',
+      payload: { joinerId: pendingJoinerId, approved: true }
+    });
+    
+    toast({
+      title: "Подключение разрешено",
+      description: "Участник подключается к звонку",
+    });
+  };
+
+  const handleRejectJoin = async () => {
+    setShowJoinRequest(false);
+    
+    const channel = supabase.channel(`room:${roomId}`);
+    await channel.subscribe();
+    
+    channel.send({
+      type: 'broadcast',
+      event: 'join_response',
+      payload: { joinerId: pendingJoinerId, approved: false }
+    });
+    
+    toast({
+      title: "Подключение отклонено",
+      description: "Запрос на подключение был отклонен",
+    });
+  };
 
   return (
-    <div className="max-w-7xl mx-auto h-full grid grid-cols-1 md:grid-cols-2 gap-4">
+    <>
+      <JoinRequestDialog
+        open={showJoinRequest}
+        onAccept={handleAcceptJoin}
+        onReject={handleRejectJoin}
+      />
+      <div className="max-w-7xl mx-auto h-full grid grid-cols-1 md:grid-cols-2 gap-4">
       {/* Remote Video */}
       <Card className="relative bg-secondary border-border overflow-hidden aspect-video">
         <video
@@ -325,6 +414,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
         </div>
       </Card>
     </div>
+    </>
   );
 };
 
