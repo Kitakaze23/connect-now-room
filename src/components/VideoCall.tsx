@@ -143,6 +143,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
 
       let isOfferSent = false;
       const processedMessages = new Set<string>();
+      let myRole: 'caller' | 'callee' | 'waiting' = 'waiting';
 
       // Subscribe to signaling channel
       const channel = supabase
@@ -158,23 +159,34 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
           const participants = Object.keys(state);
           console.log('👥 Participants in room:', participants.length, participants);
           
+          if (participants.length < 2) {
+            console.log('⏳ Waiting for second participant...');
+            myRole = 'waiting';
+            return;
+          }
+          
           // First participant (by clientId order) becomes the caller
           const sortedParticipants = participants.sort();
-          const isCaller = sortedParticipants[0] === clientId && sortedParticipants.length > 1;
+          const isCaller = sortedParticipants[0] === clientId;
+          myRole = isCaller ? 'caller' : 'callee';
           
-          console.log('🎯 Role:', isCaller ? 'CALLER' : 'CALLEE');
+          console.log('🎯 My Role:', myRole, '| Participants:', sortedParticipants);
           
           // If we're the caller and haven't sent offer yet, create and send it
-          if (isCaller && !isOfferSent && sortedParticipants.length === 2) {
-            console.log('📞 Creating offer as caller');
+          if (isCaller && !isOfferSent) {
+            console.log('📞 Creating offer as CALLER');
             isOfferSent = true;
             
+            // Small delay to ensure both peers are ready
             setTimeout(async () => {
               try {
-                const offer = await peerConnection.createOffer();
+                const offer = await peerConnection.createOffer({
+                  offerToReceiveAudio: true,
+                  offerToReceiveVideo: true,
+                });
                 await peerConnection.setLocalDescription(offer);
                 
-                console.log('📤 Sending offer');
+                console.log('📤 Sending offer to room');
                 await supabase
                   .from("signaling")
                   .insert([{
@@ -185,7 +197,9 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
               } catch (error) {
                 console.error('❌ Error creating offer:', error);
               }
-            }, 500);
+            }, 1000);
+          } else {
+            console.log('👂 Ready to receive offer as CALLEE');
           }
         })
         .on(
@@ -213,18 +227,20 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
             }
             processedMessages.add(messageId);
 
-            console.log('📥 Received signaling message:', message.type);
+            console.log('📥 Received signaling message:', message.type, 'from:', message.data?.clientId);
             
             try {
-              if (message.type === "offer") {
-                console.log('📨 Processing offer');
+              if (message.type === "offer" && myRole === 'callee') {
+                console.log('📨 Processing offer as CALLEE');
                 const offerDesc = new RTCSessionDescription(message.data.offer);
                 await peerConnection.setRemoteDescription(offerDesc);
+                console.log('✅ Remote description set (offer)');
                 
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
+                console.log('✅ Local description set (answer)');
                 
-                console.log('📤 Sending answer');
+                console.log('📤 Sending answer to CALLER');
                 await supabase
                   .from("signaling")
                   .insert([{
@@ -232,13 +248,21 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
                     type: "answer",
                     data: { answer, clientId } as any,
                   }]);
-              } else if (message.type === "answer") {
-                console.log('📨 Processing answer');
+              } else if (message.type === "answer" && myRole === 'caller') {
+                console.log('📨 Processing answer as CALLER');
                 const answerDesc = new RTCSessionDescription(message.data.answer);
                 await peerConnection.setRemoteDescription(answerDesc);
+                console.log('✅ Remote description set (answer) - Connection should establish now');
               } else if (message.type === "candidate" && message.data?.candidate) {
                 console.log('📨 Processing ICE candidate');
-                await peerConnection.addIceCandidate(new RTCIceCandidate(message.data.candidate));
+                try {
+                  await peerConnection.addIceCandidate(new RTCIceCandidate(message.data.candidate));
+                  console.log('✅ ICE candidate added');
+                } catch (e) {
+                  console.warn('⚠️ Error adding ICE candidate (might be ok):', e);
+                }
+              } else {
+                console.log('⏭️ Skipping message - wrong role or type:', { type: message.type, myRole });
               }
             } catch (error) {
               console.error('❌ Error processing signaling message:', error);
