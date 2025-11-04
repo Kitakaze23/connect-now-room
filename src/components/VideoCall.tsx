@@ -78,16 +78,9 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
     if (!localStreamRef.current) return;
 
     const setupWebRTC = async () => {
-      // Generate a unique client ID for this session
       const clientId = Math.random().toString(36).substring(7);
-      console.log('Client ID:', clientId);
+      console.log('🚀 Client ID:', clientId, 'Room:', roomId);
       
-      // Determine if this client should be the caller (initiator)
-      // Use a deterministic way: first client alphabetically becomes caller
-      const isCaller = clientId > 'mmmmmm'; // roughly 50% chance
-
-      console.log('Role:', isCaller ? 'Caller' : 'Callee');
-
       // Create peer connection
       const configuration = {
         iceServers: [
@@ -101,34 +94,34 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
 
       // Add local stream tracks
       localStreamRef.current?.getTracks().forEach(track => {
-        console.log('Adding local track:', track.kind);
+        console.log('➕ Adding local track:', track.kind);
         peerConnection.addTrack(track, localStreamRef.current!);
       });
 
       // Handle remote stream
       peerConnection.ontrack = (event) => {
-        console.log('Received remote track:', event.track.kind);
+        console.log('📹 Received remote track:', event.track.kind);
         if (remoteVideoRef.current && event.streams[0]) {
           remoteVideoRef.current.srcObject = event.streams[0];
           setIsRemoteConnected(true);
           onConnectionChange(true);
-          console.log('Remote stream connected');
+          console.log('✅ Remote stream connected');
         }
       };
 
       // Handle connection state changes
       peerConnection.onconnectionstatechange = () => {
-        console.log('Connection state:', peerConnection.connectionState);
+        console.log('🔌 Connection state:', peerConnection.connectionState);
       };
 
       peerConnection.oniceconnectionstatechange = () => {
-        console.log('ICE connection state:', peerConnection.iceConnectionState);
+        console.log('❄️ ICE connection state:', peerConnection.iceConnectionState);
       };
 
       // Handle ICE candidates
       peerConnection.onicecandidate = async (event) => {
         if (event.candidate) {
-          console.log('Sending ICE candidate');
+          console.log('📤 Sending ICE candidate');
           await supabase
             .from("signaling")
             .insert([{
@@ -136,12 +129,58 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
               type: "candidate",
               data: { candidate: event.candidate, clientId } as any,
             }]);
+        } else {
+          console.log('✅ All ICE candidates sent');
         }
       };
 
-      // Subscribe to signaling messages
+      let isOfferSent = false;
+      const processedMessages = new Set<string>();
+
+      // Subscribe to signaling channel
       const channel = supabase
-        .channel(`room:${roomId}`)
+        .channel(`room:${roomId}`, {
+          config: {
+            presence: {
+              key: clientId,
+            },
+          },
+        })
+        .on('presence', { event: 'sync' }, () => {
+          const state = channel.presenceState();
+          const participants = Object.keys(state);
+          console.log('👥 Participants in room:', participants.length, participants);
+          
+          // First participant (by clientId order) becomes the caller
+          const sortedParticipants = participants.sort();
+          const isCaller = sortedParticipants[0] === clientId && sortedParticipants.length > 1;
+          
+          console.log('🎯 Role:', isCaller ? 'CALLER' : 'CALLEE');
+          
+          // If we're the caller and haven't sent offer yet, create and send it
+          if (isCaller && !isOfferSent && sortedParticipants.length === 2) {
+            console.log('📞 Creating offer as caller');
+            isOfferSent = true;
+            
+            setTimeout(async () => {
+              try {
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                
+                console.log('📤 Sending offer');
+                await supabase
+                  .from("signaling")
+                  .insert([{
+                    room_id: roomId,
+                    type: "offer",
+                    data: { offer, clientId } as any,
+                  }]);
+              } catch (error) {
+                console.error('❌ Error creating offer:', error);
+              }
+            }, 500);
+          }
+        })
         .on(
           "postgres_changes",
           {
@@ -152,23 +191,33 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
           },
           async (payload) => {
             const message = payload.new;
+            const messageId = message.id;
             
             // Ignore our own messages
             if (message.data?.clientId === clientId) {
-              console.log('Ignoring own message');
+              console.log('⏭️ Ignoring own message:', message.type);
               return;
             }
 
-            console.log('Received signaling message:', message.type);
+            // Prevent duplicate processing
+            if (processedMessages.has(messageId)) {
+              console.log('⏭️ Already processed message:', messageId);
+              return;
+            }
+            processedMessages.add(messageId);
+
+            console.log('📥 Received signaling message:', message.type);
             
             try {
               if (message.type === "offer") {
-                console.log('Processing offer');
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(message.data.offer));
+                console.log('📨 Processing offer');
+                const offerDesc = new RTCSessionDescription(message.data.offer);
+                await peerConnection.setRemoteDescription(offerDesc);
+                
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
                 
-                console.log('Sending answer');
+                console.log('📤 Sending answer');
                 await supabase
                   .from("signaling")
                   .insert([{
@@ -177,42 +226,28 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
                     data: { answer, clientId } as any,
                   }]);
               } else if (message.type === "answer") {
-                console.log('Processing answer');
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(message.data.answer));
+                console.log('📨 Processing answer');
+                const answerDesc = new RTCSessionDescription(message.data.answer);
+                await peerConnection.setRemoteDescription(answerDesc);
               } else if (message.type === "candidate" && message.data?.candidate) {
-                console.log('Processing ICE candidate');
+                console.log('📨 Processing ICE candidate');
                 await peerConnection.addIceCandidate(new RTCIceCandidate(message.data.candidate));
               }
             } catch (error) {
-              console.error('Error processing signaling message:', error);
+              console.error('❌ Error processing signaling message:', error);
             }
           }
         )
-        .subscribe();
-
-      console.log('Subscribed to signaling channel');
-
-      // Caller creates and sends offer
-      if (isCaller) {
-        // Wait a bit for the other peer to join
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        
-        console.log('Creating offer');
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        
-        console.log('Sending offer');
-        await supabase
-          .from("signaling")
-          .insert([{
-            room_id: roomId,
-            type: "offer",
-            data: { offer, clientId } as any,
-          }]);
-      }
+        .subscribe(async (status) => {
+          console.log('📡 Subscription status:', status);
+          if (status === 'SUBSCRIBED') {
+            await channel.track({ online_at: new Date().toISOString() });
+            console.log('✅ Subscribed and tracking presence');
+          }
+        });
 
       return () => {
-        console.log('Cleaning up WebRTC');
+        console.log('🧹 Cleaning up WebRTC');
         channel.unsubscribe();
       };
     };
