@@ -17,14 +17,15 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const channelRef = useRef<any>(null);
+  const isOrganizerRef = useRef(false);
+  const isApprovedRef = useRef(false);
   const { toast } = useToast();
   const navigate = useNavigate();
   const [isRemoteConnected, setIsRemoteConnected] = useState(false);
   const [isMediaReady, setIsMediaReady] = useState(false);
   const [showJoinRequest, setShowJoinRequest] = useState(false);
   const [pendingJoinerId, setPendingJoinerId] = useState<string | null>(null);
-  const [isApproved, setIsApproved] = useState(false);
-  const [isOrganizer, setIsOrganizer] = useState(false);
 
   // Initialize media stream
   useEffect(() => {
@@ -170,7 +171,13 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
             console.log('⏳ Waiting for second participant...');
             myRole = 'waiting';
             const sortedParticipants = participants.sort();
-            setIsOrganizer(sortedParticipants[0] === clientId);
+            const isFirst = sortedParticipants[0] === clientId;
+            isOrganizerRef.current = isFirst;
+            // Организатор автоматически одобрен
+            if (isFirst) {
+              isApprovedRef.current = true;
+              console.log('👑 I am the organizer - auto-approved');
+            }
             return;
           }
           
@@ -178,12 +185,12 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
           const sortedParticipants = participants.sort();
           const isCaller = sortedParticipants[0] === clientId;
           myRole = isCaller ? 'caller' : 'callee';
-          setIsOrganizer(isCaller);
+          isOrganizerRef.current = isCaller;
           
-          console.log('🎯 My Role:', myRole, '| Participants:', sortedParticipants);
+          console.log('🎯 My Role:', myRole, '| Participants:', sortedParticipants, '| Approved:', isApprovedRef.current);
           
           // If we're the callee (second participant), send join request
-          if (!isCaller && !isApproved) {
+          if (!isCaller && !isApprovedRef.current) {
             console.log('🔔 Sending join request to organizer');
             channel.send({
               type: 'broadcast',
@@ -194,7 +201,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
           }
           
           // If we're the caller and connection is approved, create offer
-          if (isCaller && isApproved && !isOfferSent) {
+          if (isCaller && isApprovedRef.current && !isOfferSent) {
             console.log('📞 Creating offer as CALLER (approved)');
             isOfferSent = true;
             
@@ -218,26 +225,30 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
                 console.error('❌ Error creating offer:', error);
               }
             }, 1000);
-          } else {
-            console.log('👂 Ready to receive offer as CALLEE');
+          } else if (!isCaller && isApprovedRef.current) {
+            console.log('👂 Ready to receive offer as CALLEE (approved)');
           }
         })
         .on('broadcast', { event: 'join_request' }, ({ payload }) => {
-          if (isOrganizer) {
-            console.log('🔔 Received join request from:', payload.joinerId);
+          console.log('🔔 Join request received. Am I organizer?', isOrganizerRef.current);
+          if (isOrganizerRef.current) {
+            console.log('🔔 Showing join request dialog for:', payload.joinerId);
             setPendingJoinerId(payload.joinerId);
             setShowJoinRequest(true);
           }
         })
         .on('broadcast', { event: 'join_response' }, ({ payload }) => {
+          console.log('📨 Join response received for:', payload.joinerId, 'My ID:', clientId);
           if (payload.joinerId === clientId) {
-            console.log('📨 Received join response:', payload.approved);
+            console.log('📨 This response is for me! Approved:', payload.approved);
             if (payload.approved) {
-              setIsApproved(true);
+              isApprovedRef.current = true;
               toast({
                 title: "Подключение разрешено",
                 description: "Организатор разрешил подключение",
               });
+              // Trigger presence sync to restart connection process
+              channel.track({ online_at: new Date().toISOString(), approved: true });
             } else {
               toast({
                 title: "Подключение отклонено",
@@ -276,7 +287,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
             console.log('📥 Received signaling message:', message.type, 'from:', message.data?.clientId);
             
             try {
-              if (message.type === "offer" && myRole === 'callee' && isApproved) {
+              if (message.type === "offer" && myRole === 'callee' && isApprovedRef.current) {
                 console.log('📨 Processing offer as CALLEE (approved)');
                 const offerDesc = new RTCSessionDescription(message.data.offer);
                 await peerConnection.setRemoteDescription(offerDesc);
@@ -318,6 +329,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
         .subscribe(async (status) => {
           console.log('📡 Subscription status:', status);
           if (status === 'SUBSCRIBED') {
+            channelRef.current = channel;
             await channel.track({ online_at: new Date().toISOString() });
             console.log('✅ Subscribed and tracking presence');
           }
@@ -326,47 +338,48 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
       return () => {
         console.log('🧹 Cleaning up WebRTC');
         channel.unsubscribe();
+        channelRef.current = null;
       };
     };
 
     setupWebRTC();
-  }, [roomId, onConnectionChange, isMediaReady, isApproved]);
+  }, [roomId, onConnectionChange, isMediaReady]);
 
-  const handleAcceptJoin = async () => {
+  const handleAcceptJoin = () => {
     setShowJoinRequest(false);
-    setIsApproved(true);
+    isApprovedRef.current = true;
     
-    const channel = supabase.channel(`room:${roomId}`);
-    await channel.subscribe();
-    
-    channel.send({
-      type: 'broadcast',
-      event: 'join_response',
-      payload: { joinerId: pendingJoinerId, approved: true }
-    });
-    
-    toast({
-      title: "Подключение разрешено",
-      description: "Участник подключается к звонку",
-    });
+    if (channelRef.current) {
+      console.log('✅ Sending approval to joiner:', pendingJoinerId);
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'join_response',
+        payload: { joinerId: pendingJoinerId, approved: true }
+      });
+      
+      toast({
+        title: "Подключение разрешено",
+        description: "Участник подключается к звонку",
+      });
+    }
   };
 
-  const handleRejectJoin = async () => {
+  const handleRejectJoin = () => {
     setShowJoinRequest(false);
     
-    const channel = supabase.channel(`room:${roomId}`);
-    await channel.subscribe();
-    
-    channel.send({
-      type: 'broadcast',
-      event: 'join_response',
-      payload: { joinerId: pendingJoinerId, approved: false }
-    });
-    
-    toast({
-      title: "Подключение отклонено",
-      description: "Запрос на подключение был отклонен",
-    });
+    if (channelRef.current) {
+      console.log('❌ Sending rejection to joiner:', pendingJoinerId);
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'join_response',
+        payload: { joinerId: pendingJoinerId, approved: false }
+      });
+      
+      toast({
+        title: "Подключение отклонено",
+        description: "Запрос на подключение был отклонен",
+      });
+    }
   };
 
   return (
