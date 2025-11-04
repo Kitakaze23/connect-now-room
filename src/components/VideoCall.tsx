@@ -78,6 +78,16 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
     if (!localStreamRef.current) return;
 
     const setupWebRTC = async () => {
+      // Generate a unique client ID for this session
+      const clientId = Math.random().toString(36).substring(7);
+      console.log('Client ID:', clientId);
+      
+      // Determine if this client should be the caller (initiator)
+      // Use a deterministic way: first client alphabetically becomes caller
+      const isCaller = clientId > 'mmmmmm'; // roughly 50% chance
+
+      console.log('Role:', isCaller ? 'Caller' : 'Callee');
+
       // Create peer connection
       const configuration = {
         iceServers: [
@@ -91,27 +101,40 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
 
       // Add local stream tracks
       localStreamRef.current?.getTracks().forEach(track => {
+        console.log('Adding local track:', track.kind);
         peerConnection.addTrack(track, localStreamRef.current!);
       });
 
       // Handle remote stream
       peerConnection.ontrack = (event) => {
-        if (remoteVideoRef.current) {
+        console.log('Received remote track:', event.track.kind);
+        if (remoteVideoRef.current && event.streams[0]) {
           remoteVideoRef.current.srcObject = event.streams[0];
           setIsRemoteConnected(true);
           onConnectionChange(true);
+          console.log('Remote stream connected');
         }
+      };
+
+      // Handle connection state changes
+      peerConnection.onconnectionstatechange = () => {
+        console.log('Connection state:', peerConnection.connectionState);
+      };
+
+      peerConnection.oniceconnectionstatechange = () => {
+        console.log('ICE connection state:', peerConnection.iceConnectionState);
       };
 
       // Handle ICE candidates
       peerConnection.onicecandidate = async (event) => {
         if (event.candidate) {
+          console.log('Sending ICE candidate');
           await supabase
             .from("signaling")
             .insert([{
               room_id: roomId,
               type: "candidate",
-              data: event.candidate as any,
+              data: { candidate: event.candidate, clientId } as any,
             }]);
         }
       };
@@ -130,46 +153,72 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
           async (payload) => {
             const message = payload.new;
             
-            if (message.type === "offer") {
-              await peerConnection.setRemoteDescription(new RTCSessionDescription(message.data as any));
-              const answer = await peerConnection.createAnswer();
-              await peerConnection.setLocalDescription(answer);
-              
-              await supabase
-                .from("signaling")
-                .insert([{
-                  room_id: roomId,
-                  type: "answer",
-                  data: answer as any,
-                }]);
-            } else if (message.type === "answer") {
-              await peerConnection.setRemoteDescription(new RTCSessionDescription(message.data as any));
-            } else if (message.type === "candidate") {
-              await peerConnection.addIceCandidate(new RTCIceCandidate(message.data as any));
+            // Ignore our own messages
+            if (message.data?.clientId === clientId) {
+              console.log('Ignoring own message');
+              return;
+            }
+
+            console.log('Received signaling message:', message.type);
+            
+            try {
+              if (message.type === "offer") {
+                console.log('Processing offer');
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(message.data.offer));
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                
+                console.log('Sending answer');
+                await supabase
+                  .from("signaling")
+                  .insert([{
+                    room_id: roomId,
+                    type: "answer",
+                    data: { answer, clientId } as any,
+                  }]);
+              } else if (message.type === "answer") {
+                console.log('Processing answer');
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(message.data.answer));
+              } else if (message.type === "candidate" && message.data?.candidate) {
+                console.log('Processing ICE candidate');
+                await peerConnection.addIceCandidate(new RTCIceCandidate(message.data.candidate));
+              }
+            } catch (error) {
+              console.error('Error processing signaling message:', error);
             }
           }
         )
         .subscribe();
 
-      // Create offer
-      const offer = await peerConnection.createOffer();
-      await peerConnection.setLocalDescription(offer);
-      
-      await supabase
-        .from("signaling")
-        .insert([{
-          room_id: roomId,
-          type: "offer",
-          data: offer as any,
-        }]);
+      console.log('Subscribed to signaling channel');
+
+      // Caller creates and sends offer
+      if (isCaller) {
+        // Wait a bit for the other peer to join
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        console.log('Creating offer');
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        
+        console.log('Sending offer');
+        await supabase
+          .from("signaling")
+          .insert([{
+            room_id: roomId,
+            type: "offer",
+            data: { offer, clientId } as any,
+          }]);
+      }
 
       return () => {
+        console.log('Cleaning up WebRTC');
         channel.unsubscribe();
       };
     };
 
     setupWebRTC();
-  }, [roomId]);
+  }, [roomId, onConnectionChange]);
 
   return (
     <div className="max-w-7xl mx-auto h-full grid grid-cols-1 md:grid-cols-2 gap-4">
