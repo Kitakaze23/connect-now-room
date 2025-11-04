@@ -17,9 +17,11 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
   const localStreamRef = useRef<MediaStream | null>(null);
   const { toast } = useToast();
   const [isRemoteConnected, setIsRemoteConnected] = useState(false);
+  const [isMediaReady, setIsMediaReady] = useState(false);
 
   // Initialize media stream
   useEffect(() => {
+    console.log('🎥 Initializing media stream...');
     const initMediaStream = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -27,12 +29,14 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
           audio: true,
         });
         
+        console.log('✅ Media stream obtained');
         localStreamRef.current = stream;
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
+        setIsMediaReady(true);
       } catch (error) {
-        console.error("Error accessing media devices:", error);
+        console.error("❌ Error accessing media devices:", error);
         toast({
           title: "Ошибка доступа к камере",
           description: "Не удалось получить доступ к камере или микрофону",
@@ -75,7 +79,10 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
 
   // WebRTC setup with Supabase Realtime for signaling
   useEffect(() => {
-    if (!localStreamRef.current) return;
+    if (!isMediaReady || !localStreamRef.current) {
+      console.log('⏳ Waiting for media stream...', { isMediaReady, hasStream: !!localStreamRef.current });
+      return;
+    }
 
     const setupWebRTC = async () => {
       const clientId = Math.random().toString(36).substring(7);
@@ -253,7 +260,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
     };
 
     setupWebRTC();
-  }, [roomId, onConnectionChange]);
+  }, [roomId, onConnectionChange, isMediaReady]);
 
   return (
     <div className="max-w-7xl mx-auto h-full grid grid-cols-1 md:grid-cols-2 gap-4">
