@@ -83,7 +83,7 @@ const Index = () => {
       {/* Footer */}
       <footer className="border-t border-border py-8">
         <div className="max-w-7xl mx-auto px-6 text-center text-muted-foreground">
-          <p>© 2025 VideoMeet. Создано с помощью Lovable</p>
+          <p>© 2025 VideoMeet. Создано Basil</p>
         </div>
       </footer>
     </div>
