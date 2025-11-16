@@ -152,6 +152,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
       const processedMessages = new Set<string>();
       let myRole: 'caller' | 'callee' | 'waiting' = 'waiting';
       let currentParticipants: string[] = [];
+      const pendingIceCandidates: RTCIceCandidate[] = [];
 
       const createOffer = async () => {
         try {
@@ -293,12 +294,24 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
               if (message.type === "offer") {
                 if (myRole === 'callee') {
                   console.log('📨 Processing offer as CALLEE');
-                  // Если мы получаем offer, значит организатор уже одобрил подключение
                   isApprovedRef.current = true;
                   
                   const offerDesc = new RTCSessionDescription(message.data.offer);
                   await peerConnection.setRemoteDescription(offerDesc);
                   console.log('✅ Remote description set (offer)');
+                  
+                  // Добавляем отложенные ICE кандидаты
+                  if (pendingIceCandidates.length > 0) {
+                    console.log('📨 Adding', pendingIceCandidates.length, 'pending ICE candidates');
+                    for (const candidate of pendingIceCandidates) {
+                      try {
+                        await peerConnection.addIceCandidate(candidate);
+                      } catch (e) {
+                        console.warn('⚠️ Error adding pending ICE candidate:', e);
+                      }
+                    }
+                    pendingIceCandidates.length = 0;
+                  }
                   
                   const answer = await peerConnection.createAnswer();
                   await peerConnection.setLocalDescription(answer);
@@ -320,13 +333,34 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
                 const answerDesc = new RTCSessionDescription(message.data.answer);
                 await peerConnection.setRemoteDescription(answerDesc);
                 console.log('✅ Remote description set (answer) - Connection should establish now');
+                
+                // Добавляем отложенные ICE кандидаты
+                if (pendingIceCandidates.length > 0) {
+                  console.log('📨 Adding', pendingIceCandidates.length, 'pending ICE candidates');
+                  for (const candidate of pendingIceCandidates) {
+                    try {
+                      await peerConnection.addIceCandidate(candidate);
+                    } catch (e) {
+                      console.warn('⚠️ Error adding pending ICE candidate:', e);
+                    }
+                  }
+                  pendingIceCandidates.length = 0;
+                }
               } else if (message.type === "candidate" && message.data?.candidate) {
-                console.log('📨 Processing ICE candidate');
-                try {
-                  await peerConnection.addIceCandidate(new RTCIceCandidate(message.data.candidate));
-                  console.log('✅ ICE candidate added');
-                } catch (e) {
-                  console.warn('⚠️ Error adding ICE candidate (might be ok):', e);
+                const candidate = new RTCIceCandidate(message.data.candidate);
+                
+                // Проверяем, установлен ли remote description
+                if (peerConnection.remoteDescription) {
+                  console.log('📨 Adding ICE candidate immediately');
+                  try {
+                    await peerConnection.addIceCandidate(candidate);
+                    console.log('✅ ICE candidate added');
+                  } catch (e) {
+                    console.warn('⚠️ Error adding ICE candidate:', e);
+                  }
+                } else {
+                  console.log('📨 Queueing ICE candidate (no remote description yet)');
+                  pendingIceCandidates.push(candidate);
                 }
               }
             } catch (error) {
