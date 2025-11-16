@@ -200,58 +200,66 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           }
         })
         .on('presence', { event: 'join' }, ({ key }) => {
-          console.log('👋 Joined:', key);
+          console.log('👋 Participant joined:', key);
           
           if (isOrganizerRef.current && key !== clientId) {
-            console.log('🔔 New joiner detected, sending join request broadcast');
+            console.log('🔔 Organizer: showing approval dialog for joiner:', key);
             approvedJoinerId = key;
-            
-            // Send broadcast to sync state across all clients
-            setTimeout(() => {
-              channel.send({
-                type: 'broadcast',
-                event: 'join_request',
-                payload: { joinerId: key }
-              });
-            }, 100);
-          }
-        })
-        .on('broadcast', { event: 'join_request' }, ({ payload }) => {
-          if (isOrganizerRef.current && payload.joinerId !== clientId) {
-            console.log('📨 Join request received via broadcast:', payload.joinerId);
-            setPendingJoinerId(payload.joinerId);
+            setPendingJoinerId(key);
             setShowJoinRequest(true);
           }
         })
         .on('broadcast', { event: 'join_approved' }, async ({ payload }) => {
-          console.log('✅ Join approved:', payload.joinerId, 'My ID:', clientId);
+          console.log('✅ Join approval broadcast received. Joiner ID:', payload.joinerId, 'My ID:', clientId, 'Am I organizer?', isOrganizerRef.current);
           
           if (payload.joinerId === clientId) {
-            console.log('✅ I am approved, waiting for offer');
+            console.log('✅ I am the approved joiner, ready to receive offer');
             isApprovedRef.current = true;
           }
           
-          if (isOrganizerRef.current && payload.joinerId === approvedJoinerId) {
-            console.log('👑 Organizer creating offer for approved joiner');
-            setTimeout(() => createOffer(), 200);
+          if (isOrganizerRef.current) {
+            console.log('👑 I am organizer, creating offer now');
+            // Small delay to ensure joiner is ready
+            setTimeout(() => {
+              createOffer();
+            }, 300);
           }
         })
         .on('broadcast', { event: 'webrtc_offer' }, async ({ payload }) => {
-          if (payload.from === clientId || isOrganizerRef.current || !isApprovedRef.current || hasProcessedOffer) {
-            console.log('⏭️ Skipping offer');
+          console.log('📨 Offer received. From:', payload.from, 'My ID:', clientId, 'Am I organizer?', isOrganizerRef.current, 'Approved?', isApprovedRef.current);
+          
+          if (payload.from === clientId) {
+            console.log('⏭️ Skipping my own offer');
             return;
           }
+          
+          if (isOrganizerRef.current) {
+            console.log('⏭️ Organizer does not process offers');
+            return;
+          }
+          
+          if (!isApprovedRef.current) {
+            console.log('⏭️ Not approved yet, skipping offer');
+            return;
+          }
+          
+          if (hasProcessedOffer) {
+            console.log('⏭️ Already processed an offer');
+            return;
+          }
+          
           hasProcessedOffer = true;
           
-          console.log('📨 Processing offer');
+          console.log('📨 Processing offer from organizer');
           try {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.offer));
-            console.log('✅ Remote description set');
+            console.log('✅ Remote description set from offer');
             
             // Add pending ICE candidates
             for (const candidate of pendingIceCandidates) {
               try {
                 await peerConnection.addIceCandidate(candidate);
+                console.log('✅ Added pending ICE candidate');
               } catch (e) {
                 console.warn('⚠️ ICE candidate error:', e);
               }
@@ -262,7 +270,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             await peerConnection.setLocalDescription(answer);
             console.log('✅ Answer created');
             
-            console.log('📤 Sending answer');
+            console.log('📤 Sending answer to organizer');
             channel.send({
               type: 'broadcast',
               event: 'webrtc_answer',
@@ -274,25 +282,34 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           }
         })
         .on('broadcast', { event: 'webrtc_answer' }, async ({ payload }) => {
-          if (payload.from === clientId || !isOrganizerRef.current) {
-            console.log('⏭️ Skipping answer');
+          console.log('📨 Answer received. From:', payload.from, 'My ID:', clientId, 'Am I organizer?', isOrganizerRef.current);
+          
+          if (payload.from === clientId) {
+            console.log('⏭️ Skipping my own answer');
             return;
           }
           
-          console.log('📨 Processing answer');
+          if (!isOrganizerRef.current) {
+            console.log('⏭️ Joiner does not process answers');
+            return;
+          }
+          
+          console.log('📨 Organizer processing answer from joiner');
           try {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.answer));
-            console.log('✅ Answer processed');
+            console.log('✅ Answer processed, remote description set');
             
             // Add pending ICE candidates
             for (const candidate of pendingIceCandidates) {
               try {
                 await peerConnection.addIceCandidate(candidate);
+                console.log('✅ Added pending ICE candidate');
               } catch (e) {
                 console.warn('⚠️ ICE candidate error:', e);
               }
             }
             pendingIceCandidates.length = 0;
+            console.log('✅ Connection setup complete');
           } catch (error) {
             console.error('❌ Answer processing error:', error);
           }
@@ -302,17 +319,18 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             return;
           }
           
+          console.log('📨 ICE candidate received from:', payload.from);
           const candidate = new RTCIceCandidate(payload.candidate);
           
           if (peerConnection.remoteDescription) {
             try {
               await peerConnection.addIceCandidate(candidate);
-              console.log('✅ ICE candidate added');
+              console.log('✅ ICE candidate added immediately');
             } catch (e) {
               console.warn('⚠️ ICE candidate error:', e);
             }
           } else {
-            console.log('📨 Queueing ICE candidate');
+            console.log('📦 Queueing ICE candidate (no remote description yet)');
             pendingIceCandidates.push(candidate);
           }
         })
