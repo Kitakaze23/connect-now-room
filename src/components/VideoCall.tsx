@@ -179,12 +179,15 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
             presence: {
               key: clientId,
             },
+            broadcast: {
+              self: true,
+            },
           },
         })
         .on('presence', { event: 'sync' }, () => {
           const state = channel.presenceState();
           const participants = Object.keys(state);
-          console.log('👥 Participants:', participants.length);
+          console.log('👥 Participants sync:', participants.length, participants);
           
           const sortedParticipants = participants.sort();
           const isFirst = sortedParticipants[0] === clientId;
@@ -192,9 +195,9 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
           
           if (isFirst) {
             isApprovedRef.current = true;
-            console.log('👑 ORGANIZER');
+            console.log('👑 I AM ORGANIZER');
           } else {
-            console.log('👤 JOINER');
+            console.log('👤 I AM JOINER');
           }
         })
         .on('presence', { event: 'join' }, ({ key }) => {
@@ -311,11 +314,29 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
           }
         })
         .subscribe(async (status) => {
-          console.log('📡 Subscription:', status);
+          console.log('📡 Channel subscription status:', status);
           if (status === 'SUBSCRIBED') {
             channelRef.current = channel;
-            await channel.track({ online_at: new Date().toISOString() });
-            console.log('✅ Tracking presence');
+            console.log('✅ Channel subscribed, tracking presence...');
+            await channel.track({ 
+              online_at: new Date().toISOString(),
+              clientId: clientId 
+            });
+            console.log('✅ Presence tracked successfully');
+          } else if (status === 'CHANNEL_ERROR') {
+            console.error('❌ Channel subscription error');
+            toast({
+              title: "Ошибка подключения",
+              description: "Не удалось подключиться к каналу",
+              variant: "destructive",
+            });
+          } else if (status === 'TIMED_OUT') {
+            console.error('⏱️ Channel subscription timeout');
+            toast({
+              title: "Таймаут подключения",
+              description: "Подключение заняло слишком много времени",
+              variant: "destructive",
+            });
           }
         });
 
