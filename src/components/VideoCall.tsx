@@ -182,12 +182,14 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
       // ICE candidate handler
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-          console.log('📤 Sending ICE candidate');
+          console.log('📤 Sending ICE candidate:', event.candidate.type);
           channel.send({
             type: 'broadcast',
             event: 'webrtc_candidate',
             payload: { candidate: event.candidate, from: clientId }
           });
+        } else {
+          console.log('✅ ICE gathering complete');
         }
       };
 
@@ -220,7 +222,6 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           
           if (isOrganizerRef.current && key !== clientId) {
             console.log('🔔 Organizer: showing approval dialog for joiner:', key);
-            approvedJoinerId = key;
             setPendingJoinerId(key);
             setShowJoinRequest(true);
           }
@@ -231,14 +232,23 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           if (payload.joinerId === clientId) {
             console.log('✅ I am the approved joiner, ready to receive offer');
             isApprovedRef.current = true;
+            // Send ready signal back to organizer
+            channel.send({
+              type: 'broadcast',
+              event: 'joiner_ready',
+              payload: { joinerId: clientId }
+            });
           }
+        })
+        .on('broadcast', { event: 'joiner_ready' }, async ({ payload }) => {
+          console.log('✅ Joiner ready signal received. Joiner ID:', payload.joinerId, 'My ID:', clientId, 'Am I organizer?', isOrganizerRef.current);
           
-          if (isOrganizerRef.current) {
-            console.log('👑 I am organizer, creating offer now');
-            // Small delay to ensure joiner is ready
+          if (isOrganizerRef.current && payload.joinerId !== clientId) {
+            console.log('👑 I am organizer, creating offer now after joiner confirmed ready');
+            // Small delay to ensure joiner is subscribed to all events
             setTimeout(() => {
               createOffer();
-            }, 300);
+            }, 500);
           }
         })
         .on('broadcast', { event: 'webrtc_offer' }, async ({ payload }) => {
@@ -335,19 +345,20 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             return;
           }
           
-          console.log('📨 ICE candidate received from:', payload.from);
-          const candidate = new RTCIceCandidate(payload.candidate);
+          console.log('📨 ICE candidate received from:', payload.from, 'Type:', payload.candidate.type);
           
-          if (peerConnection.remoteDescription) {
-            try {
+          try {
+            const candidate = new RTCIceCandidate(payload.candidate);
+            
+            if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
               await peerConnection.addIceCandidate(candidate);
-              console.log('✅ ICE candidate added immediately');
-            } catch (e) {
-              console.warn('⚠️ ICE candidate error:', e);
+              console.log('✅ ICE candidate added immediately:', payload.candidate.type);
+            } else {
+              console.log('📦 Queueing ICE candidate (no remote description yet)');
+              pendingIceCandidates.push(candidate);
             }
-          } else {
-            console.log('📦 Queueing ICE candidate (no remote description yet)');
-            pendingIceCandidates.push(candidate);
+          } catch (e) {
+            console.error('❌ ICE candidate error:', e, payload.candidate);
           }
         })
         .on('broadcast', { event: 'join_rejected' }, ({ payload }) => {
