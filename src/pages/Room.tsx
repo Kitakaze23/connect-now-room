@@ -31,9 +31,19 @@ const Room = () => {
       {/* Header */}
       <header className="border-b border-border px-6 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-foreground">Видеозвонок</h1>
-            <p className="text-sm text-muted-foreground">ID комнаты: {roomId}</p>
+          <div className="flex items-center gap-4">
+            <div>
+              <h1 className="text-xl font-semibold text-foreground">Видеозвонок</h1>
+              <p className="text-sm text-muted-foreground">ID комнаты: {roomId}</p>
+            </div>
+            {isConnected && (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 border border-green-500/20 rounded-full">
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                <span className="text-sm text-green-600 dark:text-green-400 font-medium">
+                  Подключен
+                </span>
+              </div>
+            )}
           </div>
           <Button
             variant="secondary"
