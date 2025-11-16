@@ -291,8 +291,11 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
             
             try {
               if (message.type === "offer") {
-                if (myRole === 'callee' && isApprovedRef.current) {
-                  console.log('📨 Processing offer as CALLEE (approved)');
+                if (myRole === 'callee') {
+                  console.log('📨 Processing offer as CALLEE');
+                  // Если мы получаем offer, значит организатор уже одобрил подключение
+                  isApprovedRef.current = true;
+                  
                   const offerDesc = new RTCSessionDescription(message.data.offer);
                   await peerConnection.setRemoteDescription(offerDesc);
                   console.log('✅ Remote description set (offer)');
@@ -310,7 +313,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
                       data: { answer, clientId } as any,
                     }]);
                 } else {
-                  console.log('⏭️ Skipping offer - not ready:', { myRole, approved: isApprovedRef.current });
+                  console.log('⏭️ Skipping offer - not callee:', { myRole });
                 }
               } else if (message.type === "answer" && myRole === 'caller') {
                 console.log('📨 Processing answer as CALLER');
