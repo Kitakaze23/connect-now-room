@@ -136,14 +136,12 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
       // Handle ICE candidates
       peerConnection.onicecandidate = async (event) => {
         if (event.candidate) {
-          console.log('📤 Sending ICE candidate');
-          await supabase
-            .from("signaling")
-            .insert([{
-              room_id: roomId,
-              type: "candidate",
-              data: { candidate: event.candidate, clientId } as any,
-            }]);
+          console.log('📤 Broadcasting ICE candidate');
+          channel.send({
+            type: 'broadcast',
+            event: 'webrtc_candidate',
+            payload: { candidate: event.candidate, from: clientId }
+          });
         } else {
           console.log('✅ All ICE candidates sent');
         }
@@ -152,9 +150,17 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
       const processedMessages = new Set<string>();
       let myRole: 'caller' | 'callee' | 'waiting' = 'waiting';
       let currentParticipants: string[] = [];
+      let hasCreatedOffer = false;
+      let hasProcessedOffer = false;
       const pendingIceCandidates: RTCIceCandidate[] = [];
 
       const createOffer = async () => {
+        if (hasCreatedOffer) {
+          console.log('⏭️ Offer already created, skipping');
+          return;
+        }
+        hasCreatedOffer = true;
+        
         try {
           console.log('📞 Creating offer as CALLER');
           const offer = await peerConnection.createOffer({
@@ -163,16 +169,15 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
           });
           await peerConnection.setLocalDescription(offer);
           
-          console.log('📤 Sending offer to room');
-          await supabase
-            .from("signaling")
-            .insert([{
-              room_id: roomId,
-              type: "offer",
-              data: { offer, clientId } as any,
-            }]);
+          console.log('📤 Broadcasting offer');
+          channel.send({
+            type: 'broadcast',
+            event: 'webrtc_offer',
+            payload: { offer, from: clientId }
+          });
         } catch (error) {
           console.error('❌ Error creating offer:', error);
+          hasCreatedOffer = false;
         }
       };
 
@@ -216,13 +221,11 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
           // If we're the callee (second participant), send join request
           if (!isCaller && !isApprovedRef.current) {
             console.log('🔔 Sending join request to organizer');
-            setTimeout(() => {
-              channel.send({
-                type: 'broadcast',
-                event: 'join_request',
-                payload: { joinerId: clientId }
-              });
-            }, 500);
+            channel.send({
+              type: 'broadcast',
+              event: 'join_request',
+              payload: { joinerId: clientId }
+            });
           }
         })
         .on('broadcast', { event: 'join_request' }, ({ payload }) => {
@@ -244,12 +247,108 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
             });
           }
           
-          // Организатор создает offer после одобрения любого участника
+          // Организатор создает offer сразу после одобрения
           if (isOrganizerRef.current && payload.joinerId !== clientId) {
             console.log('👑 As organizer, creating offer for approved participant:', payload.joinerId);
-            setTimeout(async () => {
-              await createOffer();
-            }, 500);
+            await createOffer();
+          }
+        })
+        .on('broadcast', { event: 'webrtc_offer' }, async ({ payload }) => {
+          if (payload.from === clientId || hasProcessedOffer) {
+            console.log('⏭️ Skipping offer - own message or already processed');
+            return;
+          }
+          if (isOrganizerRef.current) {
+            console.log('⏭️ Skipping offer - I am organizer');
+            return;
+          }
+          hasProcessedOffer = true;
+          
+          console.log('📨 Processing offer via broadcast');
+          try {
+            const offerDesc = new RTCSessionDescription(payload.offer);
+            await peerConnection.setRemoteDescription(offerDesc);
+            console.log('✅ Remote description set (offer)');
+            
+            // Добавляем отложенные ICE кандидаты
+            if (pendingIceCandidates.length > 0) {
+              console.log('📨 Adding', pendingIceCandidates.length, 'pending ICE candidates');
+              for (const candidate of pendingIceCandidates) {
+                try {
+                  await peerConnection.addIceCandidate(candidate);
+                } catch (e) {
+                  console.warn('⚠️ Error adding pending ICE candidate:', e);
+                }
+              }
+              pendingIceCandidates.length = 0;
+            }
+            
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            console.log('✅ Created and set answer');
+            
+            console.log('📤 Broadcasting answer');
+            channel.send({
+              type: 'broadcast',
+              event: 'webrtc_answer',
+              payload: { answer, from: clientId }
+            });
+          } catch (error) {
+            console.error('❌ Error processing offer:', error);
+            hasProcessedOffer = false;
+          }
+        })
+        .on('broadcast', { event: 'webrtc_answer' }, async ({ payload }) => {
+          if (payload.from === clientId) {
+            console.log('⏭️ Skipping answer - own message');
+            return;
+          }
+          if (!isOrganizerRef.current) {
+            console.log('⏭️ Skipping answer - not organizer');
+            return;
+          }
+          
+          console.log('📨 Processing answer via broadcast');
+          try {
+            const answerDesc = new RTCSessionDescription(payload.answer);
+            await peerConnection.setRemoteDescription(answerDesc);
+            console.log('✅ Remote description set (answer)');
+            
+            // Добавляем отложенные ICE кандидаты
+            if (pendingIceCandidates.length > 0) {
+              console.log('📨 Adding', pendingIceCandidates.length, 'pending ICE candidates');
+              for (const candidate of pendingIceCandidates) {
+                try {
+                  await peerConnection.addIceCandidate(candidate);
+                } catch (e) {
+                  console.warn('⚠️ Error adding pending ICE candidate:', e);
+                }
+              }
+              pendingIceCandidates.length = 0;
+            }
+          } catch (error) {
+            console.error('❌ Error processing answer:', error);
+          }
+        })
+        .on('broadcast', { event: 'webrtc_candidate' }, async ({ payload }) => {
+          if (payload.from === clientId) {
+            console.log('⏭️ Skipping ICE candidate - own message');
+            return;
+          }
+          
+          const candidate = new RTCIceCandidate(payload.candidate);
+          
+          if (peerConnection.remoteDescription) {
+            console.log('📨 Adding ICE candidate immediately');
+            try {
+              await peerConnection.addIceCandidate(candidate);
+              console.log('✅ ICE candidate added');
+            } catch (e) {
+              console.warn('⚠️ Error adding ICE candidate:', e);
+            }
+          } else {
+            console.log('📨 Queueing ICE candidate (no remote description yet)');
+            pendingIceCandidates.push(candidate);
           }
         })
         .on('broadcast', { event: 'join_rejected' }, ({ payload }) => {
@@ -263,111 +362,6 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
             setTimeout(() => navigate('/'), 2000);
           }
         })
-        .on(
-          "postgres_changes",
-          {
-            event: "INSERT",
-            schema: "public",
-            table: "signaling",
-            filter: `room_id=eq.${roomId}`,
-          },
-          async (payload) => {
-            const message = payload.new;
-            const messageId = message.id;
-            
-            // Ignore our own messages
-            if (message.data?.clientId === clientId) {
-              console.log('⏭️ Ignoring own message:', message.type);
-              return;
-            }
-
-            // Prevent duplicate processing
-            if (processedMessages.has(messageId)) {
-              console.log('⏭️ Already processed message:', messageId);
-              return;
-            }
-            processedMessages.add(messageId);
-
-            console.log('📥 Received signaling message:', message.type, 'from:', message.data?.clientId);
-            
-            try {
-              if (message.type === "offer") {
-                if (myRole === 'callee') {
-                  console.log('📨 Processing offer as CALLEE');
-                  isApprovedRef.current = true;
-                  
-                  const offerDesc = new RTCSessionDescription(message.data.offer);
-                  await peerConnection.setRemoteDescription(offerDesc);
-                  console.log('✅ Remote description set (offer)');
-                  
-                  // Добавляем отложенные ICE кандидаты
-                  if (pendingIceCandidates.length > 0) {
-                    console.log('📨 Adding', pendingIceCandidates.length, 'pending ICE candidates');
-                    for (const candidate of pendingIceCandidates) {
-                      try {
-                        await peerConnection.addIceCandidate(candidate);
-                      } catch (e) {
-                        console.warn('⚠️ Error adding pending ICE candidate:', e);
-                      }
-                    }
-                    pendingIceCandidates.length = 0;
-                  }
-                  
-                  const answer = await peerConnection.createAnswer();
-                  await peerConnection.setLocalDescription(answer);
-                  console.log('✅ Local description set (answer)');
-                  
-                  console.log('📤 Sending answer to CALLER');
-                  await supabase
-                    .from("signaling")
-                    .insert([{
-                      room_id: roomId,
-                      type: "answer",
-                      data: { answer, clientId } as any,
-                    }]);
-                } else {
-                  console.log('⏭️ Skipping offer - not callee:', { myRole });
-                }
-              } else if (message.type === "answer" && myRole === 'caller') {
-                console.log('📨 Processing answer as CALLER');
-                const answerDesc = new RTCSessionDescription(message.data.answer);
-                await peerConnection.setRemoteDescription(answerDesc);
-                console.log('✅ Remote description set (answer) - Connection should establish now');
-                
-                // Добавляем отложенные ICE кандидаты
-                if (pendingIceCandidates.length > 0) {
-                  console.log('📨 Adding', pendingIceCandidates.length, 'pending ICE candidates');
-                  for (const candidate of pendingIceCandidates) {
-                    try {
-                      await peerConnection.addIceCandidate(candidate);
-                    } catch (e) {
-                      console.warn('⚠️ Error adding pending ICE candidate:', e);
-                    }
-                  }
-                  pendingIceCandidates.length = 0;
-                }
-              } else if (message.type === "candidate" && message.data?.candidate) {
-                const candidate = new RTCIceCandidate(message.data.candidate);
-                
-                // Проверяем, установлен ли remote description
-                if (peerConnection.remoteDescription) {
-                  console.log('📨 Adding ICE candidate immediately');
-                  try {
-                    await peerConnection.addIceCandidate(candidate);
-                    console.log('✅ ICE candidate added');
-                  } catch (e) {
-                    console.warn('⚠️ Error adding ICE candidate:', e);
-                  }
-                } else {
-                  console.log('📨 Queueing ICE candidate (no remote description yet)');
-                  pendingIceCandidates.push(candidate);
-                }
-              }
-            } catch (error) {
-              console.error('❌ Error processing signaling message:', error);
-            }
-          }
-        )
         .subscribe(async (status) => {
           console.log('📡 Subscription status:', status);
           if (status === 'SUBSCRIBED') {
