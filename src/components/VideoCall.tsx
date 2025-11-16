@@ -63,7 +63,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
         peerConnectionRef.current.close();
       }
     };
-  }, []);
+  }, [toast]);
 
   // Control camera
   useEffect(() => {
@@ -88,7 +88,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
   // WebRTC setup with Supabase Realtime for signaling
   useEffect(() => {
     if (!isMediaReady || !localStreamRef.current) {
-      console.log('⏳ Waiting for media stream...', { isMediaReady, hasStream: !!localStreamRef.current });
+      console.log('⏳ Waiting for media stream...');
       return;
     }
 
@@ -96,18 +96,15 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
       const clientId = Math.random().toString(36).substring(7);
       console.log('🚀 Client ID:', clientId, 'Room:', roomId);
       
-      // Create peer connection
-      const configuration = {
+      const peerConnection = new RTCPeerConnection({
         iceServers: [
           { urls: "stun:stun.l.google.com:19302" },
           { urls: "stun:stun1.l.google.com:19302" },
         ],
-      };
-      
-      const peerConnection = new RTCPeerConnection(configuration);
+      });
       peerConnectionRef.current = peerConnection;
 
-      // Add local stream tracks
+      // Add local tracks
       localStreamRef.current?.getTracks().forEach(track => {
         console.log('➕ Adding local track:', track.kind);
         peerConnection.addTrack(track, localStreamRef.current!);
@@ -115,7 +112,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
 
       // Handle remote stream
       peerConnection.ontrack = (event) => {
-        console.log('📹 Received remote track:', event.track.kind);
+        console.log('📹 Remote track received:', event.track.kind);
         if (remoteVideoRef.current && event.streams[0]) {
           remoteVideoRef.current.srcObject = event.streams[0];
           setIsRemoteConnected(true);
@@ -124,45 +121,28 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
         }
       };
 
-      // Handle connection state changes
       peerConnection.onconnectionstatechange = () => {
         console.log('🔌 Connection state:', peerConnection.connectionState);
       };
 
       peerConnection.oniceconnectionstatechange = () => {
-        console.log('❄️ ICE connection state:', peerConnection.iceConnectionState);
+        console.log('❄️ ICE state:', peerConnection.iceConnectionState);
       };
 
-      // Handle ICE candidates
-      peerConnection.onicecandidate = async (event) => {
-        if (event.candidate) {
-          console.log('📤 Broadcasting ICE candidate');
-          channel.send({
-            type: 'broadcast',
-            event: 'webrtc_candidate',
-            payload: { candidate: event.candidate, from: clientId }
-          });
-        } else {
-          console.log('✅ All ICE candidates sent');
-        }
-      };
-
-      const processedMessages = new Set<string>();
-      let myRole: 'caller' | 'callee' | 'waiting' = 'waiting';
-      let currentParticipants: string[] = [];
       let hasCreatedOffer = false;
       let hasProcessedOffer = false;
       const pendingIceCandidates: RTCIceCandidate[] = [];
+      let approvedJoinerId: string | null = null;
 
       const createOffer = async () => {
         if (hasCreatedOffer) {
-          console.log('⏭️ Offer already created, skipping');
+          console.log('⏭️ Offer already created');
           return;
         }
         hasCreatedOffer = true;
         
         try {
-          console.log('📞 Creating offer as CALLER');
+          console.log('📞 Creating offer');
           const offer = await peerConnection.createOffer({
             offerToReceiveAudio: true,
             offerToReceiveVideo: true,
@@ -181,7 +161,18 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
         }
       };
 
-      // Subscribe to signaling channel
+      // ICE candidate handler
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          console.log('📤 Sending ICE candidate');
+          channel.send({
+            type: 'broadcast',
+            event: 'webrtc_candidate',
+            payload: { candidate: event.candidate, from: clientId }
+          });
+        }
+      };
+
       const channel = supabase
         .channel(`room:${roomId}`, {
           config: {
@@ -193,186 +184,143 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
         .on('presence', { event: 'sync' }, () => {
           const state = channel.presenceState();
           const participants = Object.keys(state);
-          currentParticipants = participants;
-          console.log('👥 Participants in room:', participants.length, participants);
+          console.log('👥 Participants:', participants.length);
           
-          if (participants.length < 2) {
-            console.log('⏳ Waiting for second participant...');
-            myRole = 'waiting';
-            const sortedParticipants = participants.sort();
-            const isFirst = sortedParticipants[0] === clientId;
-            isOrganizerRef.current = isFirst;
-            // Организатор автоматически одобрен
-            if (isFirst) {
-              isApprovedRef.current = true;
-              console.log('👑 I am the organizer - auto-approved');
-            }
-            return;
-          }
-          
-          // First participant (by clientId order) becomes the caller/organizer
           const sortedParticipants = participants.sort();
-          const isCaller = sortedParticipants[0] === clientId;
-          myRole = isCaller ? 'caller' : 'callee';
-          isOrganizerRef.current = isCaller;
+          const isFirst = sortedParticipants[0] === clientId;
+          isOrganizerRef.current = isFirst;
           
-          console.log('🎯 My Role:', myRole, '| Participants:', sortedParticipants, '| Approved:', isApprovedRef.current);
-          
-          // If we're the callee (second participant), send join request
-          if (!isCaller && !isApprovedRef.current) {
-            console.log('🔔 Sending join request to organizer');
-            channel.send({
-              type: 'broadcast',
-              event: 'join_request',
-              payload: { joinerId: clientId }
-            });
+          if (isFirst) {
+            isApprovedRef.current = true;
+            console.log('👑 ORGANIZER');
+          } else {
+            console.log('👤 JOINER');
           }
         })
-        .on('broadcast', { event: 'join_request' }, ({ payload }) => {
-          console.log('🔔 Join request received. Am I organizer?', isOrganizerRef.current);
-          if (isOrganizerRef.current && payload.joinerId) {
-            console.log('🔔 Showing join request dialog for:', payload.joinerId);
-            setPendingJoinerId(payload.joinerId);
+        .on('presence', { event: 'join' }, ({ key }) => {
+          console.log('👋 Joined:', key);
+          
+          if (isOrganizerRef.current && key !== clientId) {
+            console.log('🔔 Showing approval dialog');
+            approvedJoinerId = key;
+            setPendingJoinerId(key);
             setShowJoinRequest(true);
           }
         })
         .on('broadcast', { event: 'join_approved' }, async ({ payload }) => {
-          console.log('✅ Join approved event for:', payload.joinerId, 'My ID:', clientId);
+          console.log('✅ Join approved:', payload.joinerId);
+          
           if (payload.joinerId === clientId) {
-            console.log('✅ I was approved! Setting approved state');
+            console.log('✅ I am approved');
             isApprovedRef.current = true;
-            toast({
-              title: "Подключение разрешено",
-              description: "Организатор разрешил подключение",
-            });
           }
           
-          // Организатор создает offer сразу после одобрения
-          if (isOrganizerRef.current && payload.joinerId !== clientId) {
-            console.log('👑 As organizer, creating offer for approved participant:', payload.joinerId);
+          if (isOrganizerRef.current && payload.joinerId === approvedJoinerId) {
+            console.log('👑 Creating offer');
             await createOffer();
           }
         })
         .on('broadcast', { event: 'webrtc_offer' }, async ({ payload }) => {
-          if (payload.from === clientId || hasProcessedOffer) {
-            console.log('⏭️ Skipping offer - own message or already processed');
-            return;
-          }
-          if (isOrganizerRef.current) {
-            console.log('⏭️ Skipping offer - I am organizer');
+          if (payload.from === clientId || isOrganizerRef.current || !isApprovedRef.current || hasProcessedOffer) {
+            console.log('⏭️ Skipping offer');
             return;
           }
           hasProcessedOffer = true;
           
-          console.log('📨 Processing offer via broadcast');
+          console.log('📨 Processing offer');
           try {
-            const offerDesc = new RTCSessionDescription(payload.offer);
-            await peerConnection.setRemoteDescription(offerDesc);
-            console.log('✅ Remote description set (offer)');
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.offer));
+            console.log('✅ Remote description set');
             
-            // Добавляем отложенные ICE кандидаты
-            if (pendingIceCandidates.length > 0) {
-              console.log('📨 Adding', pendingIceCandidates.length, 'pending ICE candidates');
-              for (const candidate of pendingIceCandidates) {
-                try {
-                  await peerConnection.addIceCandidate(candidate);
-                } catch (e) {
-                  console.warn('⚠️ Error adding pending ICE candidate:', e);
-                }
+            // Add pending ICE candidates
+            for (const candidate of pendingIceCandidates) {
+              try {
+                await peerConnection.addIceCandidate(candidate);
+              } catch (e) {
+                console.warn('⚠️ ICE candidate error:', e);
               }
-              pendingIceCandidates.length = 0;
             }
+            pendingIceCandidates.length = 0;
             
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
-            console.log('✅ Created and set answer');
+            console.log('✅ Answer created');
             
-            console.log('📤 Broadcasting answer');
+            console.log('📤 Sending answer');
             channel.send({
               type: 'broadcast',
               event: 'webrtc_answer',
               payload: { answer, from: clientId }
             });
           } catch (error) {
-            console.error('❌ Error processing offer:', error);
+            console.error('❌ Offer processing error:', error);
             hasProcessedOffer = false;
           }
         })
         .on('broadcast', { event: 'webrtc_answer' }, async ({ payload }) => {
-          if (payload.from === clientId) {
-            console.log('⏭️ Skipping answer - own message');
-            return;
-          }
-          if (!isOrganizerRef.current) {
-            console.log('⏭️ Skipping answer - not organizer');
+          if (payload.from === clientId || !isOrganizerRef.current) {
+            console.log('⏭️ Skipping answer');
             return;
           }
           
-          console.log('📨 Processing answer via broadcast');
+          console.log('📨 Processing answer');
           try {
-            const answerDesc = new RTCSessionDescription(payload.answer);
-            await peerConnection.setRemoteDescription(answerDesc);
-            console.log('✅ Remote description set (answer)');
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.answer));
+            console.log('✅ Answer processed');
             
-            // Добавляем отложенные ICE кандидаты
-            if (pendingIceCandidates.length > 0) {
-              console.log('📨 Adding', pendingIceCandidates.length, 'pending ICE candidates');
-              for (const candidate of pendingIceCandidates) {
-                try {
-                  await peerConnection.addIceCandidate(candidate);
-                } catch (e) {
-                  console.warn('⚠️ Error adding pending ICE candidate:', e);
-                }
+            // Add pending ICE candidates
+            for (const candidate of pendingIceCandidates) {
+              try {
+                await peerConnection.addIceCandidate(candidate);
+              } catch (e) {
+                console.warn('⚠️ ICE candidate error:', e);
               }
-              pendingIceCandidates.length = 0;
             }
+            pendingIceCandidates.length = 0;
           } catch (error) {
-            console.error('❌ Error processing answer:', error);
+            console.error('❌ Answer processing error:', error);
           }
         })
         .on('broadcast', { event: 'webrtc_candidate' }, async ({ payload }) => {
           if (payload.from === clientId) {
-            console.log('⏭️ Skipping ICE candidate - own message');
             return;
           }
           
           const candidate = new RTCIceCandidate(payload.candidate);
           
           if (peerConnection.remoteDescription) {
-            console.log('📨 Adding ICE candidate immediately');
             try {
               await peerConnection.addIceCandidate(candidate);
               console.log('✅ ICE candidate added');
             } catch (e) {
-              console.warn('⚠️ Error adding ICE candidate:', e);
+              console.warn('⚠️ ICE candidate error:', e);
             }
           } else {
-            console.log('📨 Queueing ICE candidate (no remote description yet)');
+            console.log('📨 Queueing ICE candidate');
             pendingIceCandidates.push(candidate);
           }
         })
         .on('broadcast', { event: 'join_rejected' }, ({ payload }) => {
-          console.log('❌ Join rejected for:', payload.joinerId, 'My ID:', clientId);
           if (payload.joinerId === clientId) {
             toast({
               title: "Подключение отклонено",
-              description: "Организатор отклонил запрос на подключение",
+              description: "Организатор отклонил запрос",
               variant: "destructive",
             });
             setTimeout(() => navigate('/'), 2000);
           }
         })
         .subscribe(async (status) => {
-          console.log('📡 Subscription status:', status);
+          console.log('📡 Subscription:', status);
           if (status === 'SUBSCRIBED') {
             channelRef.current = channel;
             await channel.track({ online_at: new Date().toISOString() });
-            console.log('✅ Subscribed and tracking presence');
+            console.log('✅ Tracking presence');
           }
         });
 
       return () => {
-        console.log('🧹 Cleaning up WebRTC');
+        console.log('🧹 Cleanup');
         channel.unsubscribe();
         channelRef.current = null;
       };
@@ -385,7 +333,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
     setShowJoinRequest(false);
     
     if (channelRef.current && pendingJoinerId) {
-      console.log('✅ Sending approval to joiner:', pendingJoinerId);
+      console.log('✅ Approving:', pendingJoinerId);
       channelRef.current.send({
         type: 'broadcast',
         event: 'join_approved',
@@ -394,7 +342,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
       
       toast({
         title: "Подключение разрешено",
-        description: "Участник подключается к звонку",
+        description: "Участник подключается",
       });
     }
     setPendingJoinerId(null);
@@ -404,7 +352,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
     setShowJoinRequest(false);
     
     if (channelRef.current && pendingJoinerId) {
-      console.log('❌ Sending rejection to joiner:', pendingJoinerId);
+      console.log('❌ Rejecting:', pendingJoinerId);
       channelRef.current.send({
         type: 'broadcast',
         event: 'join_rejected',
@@ -413,7 +361,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
       
       toast({
         title: "Подключение отклонено",
-        description: "Запрос на подключение был отклонен",
+        description: "Запрос отклонен",
       });
     }
     setPendingJoinerId(null);
@@ -427,43 +375,36 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
         onReject={handleRejectJoin}
       />
       <div className="max-w-7xl mx-auto h-full grid grid-cols-1 md:grid-cols-2 gap-4">
-      {/* Remote Video */}
-      <Card className="relative bg-secondary border-border overflow-hidden aspect-video">
-        <video
-          ref={remoteVideoRef}
-          autoPlay
-          playsInline
-          className="w-full h-full object-cover"
-        />
-        {!isRemoteConnected && (
-          <div className="absolute inset-0 flex items-center justify-center bg-secondary">
-            <p className="text-muted-foreground">Ожидание подключения...</p>
+        <Card className="relative bg-secondary border-border overflow-hidden aspect-video">
+          <video
+            ref={remoteVideoRef}
+            autoPlay
+            playsInline
+            className="w-full h-full object-cover"
+          />
+          {!isRemoteConnected && (
+            <div className="absolute inset-0 flex items-center justify-center bg-secondary">
+              <p className="text-muted-foreground">Ожидание подключения...</p>
+            </div>
+          )}
+          <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm px-3 py-1 rounded-full">
+            <p className="text-sm text-foreground">Удаленный участник</p>
           </div>
-        )}
-        <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm px-3 py-1 rounded-full">
-          <p className="text-sm text-foreground">Удаленный участник</p>
-        </div>
-      </Card>
+        </Card>
 
-      {/* Local Video */}
-      <Card className="relative bg-secondary border-border overflow-hidden aspect-video">
-        <video
-          ref={localVideoRef}
-          autoPlay
-          playsInline
-          muted
-          className="w-full h-full object-cover scale-x-[-1]"
-        />
-        {!isCameraOn && (
-          <div className="absolute inset-0 flex items-center justify-center bg-secondary">
-            <p className="text-muted-foreground">Камера выключена</p>
+        <Card className="relative bg-secondary border-border overflow-hidden aspect-video">
+          <video
+            ref={localVideoRef}
+            autoPlay
+            playsInline
+            muted
+            className="w-full h-full object-cover"
+          />
+          <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm px-3 py-1 rounded-full">
+            <p className="text-sm text-foreground">Вы</p>
           </div>
-        )}
-        <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm px-3 py-1 rounded-full">
-          <p className="text-sm text-foreground">Вы</p>
-        </div>
-      </Card>
-    </div>
+        </Card>
+      </div>
     </>
   );
 };
