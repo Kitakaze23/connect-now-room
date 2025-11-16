@@ -10,9 +10,10 @@ interface VideoCallProps {
   isCameraOn: boolean;
   isMicOn: boolean;
   onConnectionChange: (connected: boolean) => void;
+  onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
 }
 
-const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCallProps) => {
+const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnectionStateChange }: VideoCallProps) => {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
@@ -123,6 +124,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
 
       peerConnection.onconnectionstatechange = () => {
         console.log('🔌 Connection state:', peerConnection.connectionState);
+        onConnectionStateChange?.(peerConnection.connectionState);
       };
 
       peerConnection.oniceconnectionstatechange = () => {
