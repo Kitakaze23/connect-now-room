@@ -12,6 +12,7 @@ const Room = () => {
   const [isCameraOn, setIsCameraOn] = useState(true);
   const [isMicOn, setIsMicOn] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
+  const [connectionState, setConnectionState] = useState<RTCPeerConnectionState>("new");
 
   const copyRoomLink = () => {
     const link = `${window.location.origin}/room/${roomId}`;
@@ -36,11 +37,43 @@ const Room = () => {
               <h1 className="text-xl font-semibold text-foreground">Видеозвонок</h1>
               <p className="text-sm text-muted-foreground">ID комнаты: {roomId}</p>
             </div>
-            {isConnected && (
+            {(connectionState === "connecting" || connectionState === "new") && (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-yellow-500/10 border border-yellow-500/20 rounded-full">
+                <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse" />
+                <span className="text-sm text-yellow-600 dark:text-yellow-400 font-medium">
+                  Подключение...
+                </span>
+              </div>
+            )}
+            {connectionState === "connected" && (
               <div className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 border border-green-500/20 rounded-full">
                 <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
                 <span className="text-sm text-green-600 dark:text-green-400 font-medium">
-                  Подключен
+                  Подключено
+                </span>
+              </div>
+            )}
+            {connectionState === "disconnected" && (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-orange-500/10 border border-orange-500/20 rounded-full">
+                <div className="w-2 h-2 bg-orange-500 rounded-full animate-pulse" />
+                <span className="text-sm text-orange-600 dark:text-orange-400 font-medium">
+                  Отключено
+                </span>
+              </div>
+            )}
+            {connectionState === "failed" && (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-red-500/10 border border-red-500/20 rounded-full">
+                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                <span className="text-sm text-red-600 dark:text-red-400 font-medium">
+                  Ошибка
+                </span>
+              </div>
+            )}
+            {connectionState === "closed" && (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/50 border border-border rounded-full">
+                <div className="w-2 h-2 bg-muted-foreground rounded-full" />
+                <span className="text-sm text-muted-foreground font-medium">
+                  Закрыто
                 </span>
               </div>
             )}
@@ -64,6 +97,7 @@ const Room = () => {
           isCameraOn={isCameraOn}
           isMicOn={isMicOn}
           onConnectionChange={setIsConnected}
+          onConnectionStateChange={setConnectionState}
         />
       </div>
 
