@@ -201,23 +201,37 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
           console.log('👋 Joined:', key);
           
           if (isOrganizerRef.current && key !== clientId) {
-            console.log('🔔 Showing approval dialog');
+            console.log('🔔 New joiner detected, sending join request broadcast');
             approvedJoinerId = key;
-            setPendingJoinerId(key);
+            
+            // Send broadcast to sync state across all clients
+            setTimeout(() => {
+              channel.send({
+                type: 'broadcast',
+                event: 'join_request',
+                payload: { joinerId: key }
+              });
+            }, 100);
+          }
+        })
+        .on('broadcast', { event: 'join_request' }, ({ payload }) => {
+          if (isOrganizerRef.current && payload.joinerId !== clientId) {
+            console.log('📨 Join request received via broadcast:', payload.joinerId);
+            setPendingJoinerId(payload.joinerId);
             setShowJoinRequest(true);
           }
         })
         .on('broadcast', { event: 'join_approved' }, async ({ payload }) => {
-          console.log('✅ Join approved:', payload.joinerId);
+          console.log('✅ Join approved:', payload.joinerId, 'My ID:', clientId);
           
           if (payload.joinerId === clientId) {
-            console.log('✅ I am approved');
+            console.log('✅ I am approved, waiting for offer');
             isApprovedRef.current = true;
           }
           
           if (isOrganizerRef.current && payload.joinerId === approvedJoinerId) {
-            console.log('👑 Creating offer');
-            await createOffer();
+            console.log('👑 Organizer creating offer for approved joiner');
+            setTimeout(() => createOffer(), 200);
           }
         })
         .on('broadcast', { event: 'webrtc_offer' }, async ({ payload }) => {
@@ -311,11 +325,26 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
           }
         })
         .subscribe(async (status) => {
-          console.log('📡 Subscription:', status);
+          console.log('📡 Subscription status:', status);
           if (status === 'SUBSCRIBED') {
             channelRef.current = channel;
+            console.log('✅ Channel subscribed, tracking presence...');
             await channel.track({ online_at: new Date().toISOString() });
-            console.log('✅ Tracking presence');
+            console.log('✅ Presence tracked');
+          } else if (status === 'CHANNEL_ERROR') {
+            console.error('❌ Channel error');
+            toast({
+              title: "Ошибка подключения",
+              description: "Не удалось подключиться к каналу",
+              variant: "destructive",
+            });
+          } else if (status === 'TIMED_OUT') {
+            console.error('❌ Channel timed out');
+            toast({
+              title: "Превышено время ожидания",
+              description: "Попробуйте перезагрузить страницу",
+              variant: "destructive",
+            });
           }
         });
 
