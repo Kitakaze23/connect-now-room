@@ -241,10 +241,14 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange }: VideoCal
               title: "Подключение разрешено",
               description: "Организатор разрешил подключение",
             });
-          } else if (isOrganizerRef.current) {
-            // Организатор создает offer после одобрения
-            console.log('👑 As organizer, creating offer for approved participant');
-            await createOffer();
+          }
+          
+          // Организатор создает offer после одобрения любого участника
+          if (isOrganizerRef.current && payload.joinerId !== clientId) {
+            console.log('👑 As organizer, creating offer for approved participant:', payload.joinerId);
+            setTimeout(async () => {
+              await createOffer();
+            }, 500);
           }
         })
         .on('broadcast', { event: 'join_rejected' }, ({ payload }) => {
