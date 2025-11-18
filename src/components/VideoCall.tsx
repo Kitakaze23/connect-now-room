@@ -226,6 +226,16 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             setShowJoinRequest(true);
           }
         })
+        .on('presence', { event: 'leave' }, ({ key }) => {
+          console.log('👋 Participant left:', key);
+          
+          if (key !== clientId) {
+            toast({
+              title: "Пользователь покинул встречу",
+              description: "Собеседник отключился",
+            });
+          }
+        })
         .on('broadcast', { event: 'join_approved' }, async ({ payload }) => {
           console.log('✅ Join approval broadcast received. Joiner ID:', payload.joinerId, 'My ID:', clientId, 'Am I organizer?', isOrganizerRef.current);
           

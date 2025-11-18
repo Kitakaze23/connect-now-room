@@ -32,51 +32,51 @@ const Room = () => {
       {/* Header */}
       <header className="border-b border-border px-6 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <div>
-              <h1 className="text-xl font-semibold text-foreground">Видеозвонок</h1>
-              <p className="text-sm text-muted-foreground">ID комнаты: {roomId}</p>
+          <div>
+            <h1 className="text-xl font-semibold text-foreground">Видеозвонок</h1>
+            <p className="text-sm text-muted-foreground">ID комнаты: {roomId}</p>
+            <div className="mt-2">
+              {(connectionState === "connecting" || connectionState === "new") && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-yellow-500/10 border border-yellow-500/20 rounded-full">
+                  <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse" />
+                  <span className="text-sm text-yellow-600 dark:text-yellow-400 font-medium">
+                    Подключение...
+                  </span>
+                </div>
+              )}
+              {connectionState === "connected" && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 border border-green-500/20 rounded-full">
+                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                  <span className="text-sm text-green-600 dark:text-green-400 font-medium">
+                    Подключено
+                  </span>
+                </div>
+              )}
+              {connectionState === "disconnected" && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-orange-500/10 border border-orange-500/20 rounded-full">
+                  <div className="w-2 h-2 bg-orange-500 rounded-full animate-pulse" />
+                  <span className="text-sm text-orange-600 dark:text-orange-400 font-medium">
+                    Отключено
+                  </span>
+                </div>
+              )}
+              {connectionState === "failed" && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-red-500/10 border border-red-500/20 rounded-full">
+                  <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
+                  <span className="text-sm text-red-600 dark:text-red-400 font-medium">
+                    Ошибка
+                  </span>
+                </div>
+              )}
+              {connectionState === "closed" && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/50 border border-border rounded-full">
+                  <div className="w-2 h-2 bg-muted-foreground rounded-full" />
+                  <span className="text-sm text-muted-foreground font-medium">
+                    Закрыто
+                  </span>
+                </div>
+              )}
             </div>
-            {(connectionState === "connecting" || connectionState === "new") && (
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-yellow-500/10 border border-yellow-500/20 rounded-full">
-                <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse" />
-                <span className="text-sm text-yellow-600 dark:text-yellow-400 font-medium">
-                  Подключение...
-                </span>
-              </div>
-            )}
-            {connectionState === "connected" && (
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-green-500/10 border border-green-500/20 rounded-full">
-                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                <span className="text-sm text-green-600 dark:text-green-400 font-medium">
-                  Подключено
-                </span>
-              </div>
-            )}
-            {connectionState === "disconnected" && (
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-orange-500/10 border border-orange-500/20 rounded-full">
-                <div className="w-2 h-2 bg-orange-500 rounded-full animate-pulse" />
-                <span className="text-sm text-orange-600 dark:text-orange-400 font-medium">
-                  Отключено
-                </span>
-              </div>
-            )}
-            {connectionState === "failed" && (
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-red-500/10 border border-red-500/20 rounded-full">
-                <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-                <span className="text-sm text-red-600 dark:text-red-400 font-medium">
-                  Ошибка
-                </span>
-              </div>
-            )}
-            {connectionState === "closed" && (
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/50 border border-border rounded-full">
-                <div className="w-2 h-2 bg-muted-foreground rounded-full" />
-                <span className="text-sm text-muted-foreground font-medium">
-                  Закрыто
-                </span>
-              </div>
-            )}
           </div>
           <Button
             variant="secondary"
