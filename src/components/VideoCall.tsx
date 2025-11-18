@@ -464,7 +464,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             </div>
           )}
           <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm px-3 py-1 rounded-full">
-            <p className="text-sm text-foreground">Удаленный участник</p>
+            <p className="text-sm text-foreground">Собеседник</p>
           </div>
         </Card>
 
