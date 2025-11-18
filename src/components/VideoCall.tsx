@@ -221,6 +221,12 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         .on('presence', { event: 'join' }, ({ key }) => {
           console.log('👋 Participant joined:', key);
           
+          if (key !== clientId) {
+            // Reset disconnected state when a new participant joins
+            setUserDisconnected(false);
+            setIsRemoteConnected(false);
+          }
+          
           if (isOrganizerRef.current && key !== clientId) {
             console.log('🔔 Organizer: showing approval dialog for joiner:', key);
             setPendingJoinerId(key);
