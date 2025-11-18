@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import JoinRequestDialog from "./JoinRequestDialog";
 import { useNavigate } from "react-router-dom";
+import { SwitchCamera, Volume2 } from "lucide-react";
 
 interface VideoCallProps {
   roomId: string;
@@ -27,16 +30,53 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
   const [isMediaReady, setIsMediaReady] = useState(false);
   const [showJoinRequest, setShowJoinRequest] = useState(false);
   const [pendingJoinerId, setPendingJoinerId] = useState<string | null>(null);
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedAudioDevice, setSelectedAudioDevice] = useState<string>('');
+  const [currentCameraIndex, setCurrentCameraIndex] = useState(0);
+
+  // Get available devices
+  useEffect(() => {
+    const getDevices = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devices.filter(device => device.kind === 'audioinput');
+        const videoInputs = devices.filter(device => device.kind === 'videoinput');
+        
+        setAudioDevices(audioInputs);
+        setVideoDevices(videoInputs);
+        
+        if (audioInputs.length > 0 && !selectedAudioDevice) {
+          setSelectedAudioDevice(audioInputs[0].deviceId);
+        }
+        
+        console.log('🎤 Audio devices:', audioInputs.length);
+        console.log('📹 Video devices:', videoInputs.length);
+      } catch (error) {
+        console.error("❌ Error enumerating devices:", error);
+      }
+    };
+
+    getDevices();
+    
+    // Listen for device changes
+    navigator.mediaDevices.addEventListener('devicechange', getDevices);
+    return () => {
+      navigator.mediaDevices.removeEventListener('devicechange', getDevices);
+    };
+  }, [selectedAudioDevice]);
 
   // Initialize media stream
   useEffect(() => {
     console.log('🎥 Initializing media stream...');
     const initMediaStream = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
-        });
+        const constraints: MediaStreamConstraints = {
+          video: videoDevices.length > 0 ? { deviceId: videoDevices[currentCameraIndex]?.deviceId } : true,
+          audio: selectedAudioDevice ? { deviceId: selectedAudioDevice } : true,
+        };
+        
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         
         console.log('✅ Media stream obtained');
         localStreamRef.current = stream;
@@ -64,7 +104,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         peerConnectionRef.current.close();
       }
     };
-  }, [toast]);
+  }, [toast, selectedAudioDevice, currentCameraIndex, videoDevices]);
 
   // Control camera
   useEffect(() => {
@@ -443,6 +483,114 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
     setPendingJoinerId(null);
   };
 
+  const switchCamera = async () => {
+    if (videoDevices.length <= 1) {
+      toast({
+        title: "Нет доступных камер",
+        description: "У вас только одна камера",
+      });
+      return;
+    }
+
+    try {
+      const nextIndex = (currentCameraIndex + 1) % videoDevices.length;
+      const nextDevice = videoDevices[nextIndex];
+      
+      console.log('🔄 Switching to camera:', nextDevice.label);
+      
+      // Stop current video track
+      if (localStreamRef.current) {
+        localStreamRef.current.getVideoTracks().forEach(track => track.stop());
+      }
+      
+      // Get new video stream
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: nextDevice.deviceId },
+        audio: false,
+      });
+      
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      
+      // Replace track in peer connection
+      if (peerConnectionRef.current && localStreamRef.current) {
+        const sender = peerConnectionRef.current.getSenders().find(s => s.track?.kind === 'video');
+        if (sender) {
+          await sender.replaceTrack(newVideoTrack);
+        }
+        
+        // Update local stream
+        const oldVideoTrack = localStreamRef.current.getVideoTracks()[0];
+        localStreamRef.current.removeTrack(oldVideoTrack);
+        localStreamRef.current.addTrack(newVideoTrack);
+        
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = localStreamRef.current;
+        }
+      }
+      
+      setCurrentCameraIndex(nextIndex);
+      
+      toast({
+        title: "Камера переключена",
+        description: nextDevice.label || `Камера ${nextIndex + 1}`,
+      });
+    } catch (error) {
+      console.error('❌ Error switching camera:', error);
+      toast({
+        title: "Ошибка переключения камеры",
+        description: "Не удалось переключить камеру",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const changeAudioDevice = async (deviceId: string) => {
+    try {
+      console.log('🎤 Changing audio device to:', deviceId);
+      
+      // Stop current audio track
+      if (localStreamRef.current) {
+        localStreamRef.current.getAudioTracks().forEach(track => track.stop());
+      }
+      
+      // Get new audio stream
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: deviceId },
+        video: false,
+      });
+      
+      const newAudioTrack = newStream.getAudioTracks()[0];
+      
+      // Replace track in peer connection
+      if (peerConnectionRef.current && localStreamRef.current) {
+        const sender = peerConnectionRef.current.getSenders().find(s => s.track?.kind === 'audio');
+        if (sender) {
+          await sender.replaceTrack(newAudioTrack);
+        }
+        
+        // Update local stream
+        const oldAudioTrack = localStreamRef.current.getAudioTracks()[0];
+        localStreamRef.current.removeTrack(oldAudioTrack);
+        localStreamRef.current.addTrack(newAudioTrack);
+      }
+      
+      setSelectedAudioDevice(deviceId);
+      
+      const device = audioDevices.find(d => d.deviceId === deviceId);
+      toast({
+        title: "Аудио устройство изменено",
+        description: device?.label || "Новое устройство",
+      });
+    } catch (error) {
+      console.error('❌ Error changing audio device:', error);
+      toast({
+        title: "Ошибка изменения устройства",
+        description: "Не удалось изменить аудио устройство",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <>
       <JoinRequestDialog
@@ -478,6 +626,41 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           />
           <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm px-3 py-1 rounded-full">
             <p className="text-sm text-foreground">Вы</p>
+          </div>
+          
+          {/* Device controls */}
+          <div className="absolute top-4 right-4 flex flex-col gap-2">
+            {videoDevices.length > 1 && (
+              <Button
+                size="icon"
+                variant="secondary"
+                onClick={switchCamera}
+                className="bg-background/80 backdrop-blur-sm hover:bg-background/90"
+                title="Переключить камеру"
+              >
+                <SwitchCamera className="h-4 w-4" />
+              </Button>
+            )}
+            
+            {audioDevices.length > 0 && (
+              <div className="bg-background/80 backdrop-blur-sm rounded-md p-2">
+                <div className="flex items-center gap-2">
+                  <Volume2 className="h-4 w-4 text-foreground" />
+                  <Select value={selectedAudioDevice} onValueChange={changeAudioDevice}>
+                    <SelectTrigger className="w-[180px] h-8 text-xs">
+                      <SelectValue placeholder="Выберите микрофон" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {audioDevices.map((device) => (
+                        <SelectItem key={device.deviceId} value={device.deviceId}>
+                          {device.label || `Микрофон ${audioDevices.indexOf(device) + 1}`}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            )}
           </div>
         </Card>
       </div>
