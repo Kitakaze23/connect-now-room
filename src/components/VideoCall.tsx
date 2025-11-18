@@ -27,6 +27,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
   const [isMediaReady, setIsMediaReady] = useState(false);
   const [showJoinRequest, setShowJoinRequest] = useState(false);
   const [pendingJoinerId, setPendingJoinerId] = useState<string | null>(null);
+  const [userDisconnected, setUserDisconnected] = useState(false);
 
   // Initialize media stream
   useEffect(() => {
@@ -230,6 +231,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           console.log('👋 Participant left:', key);
           
           if (key !== clientId) {
+            setUserDisconnected(true);
             toast({
               title: "Пользователь покинул встречу",
               description: "Собеседник отключился",
@@ -468,11 +470,15 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             playsInline
             className="w-full h-full object-cover"
           />
-          {!isRemoteConnected && (
+          {userDisconnected ? (
+            <div className="absolute inset-0 flex items-center justify-center bg-secondary">
+              <p className="text-muted-foreground">Пользователь покинул встречу</p>
+            </div>
+          ) : !isRemoteConnected ? (
             <div className="absolute inset-0 flex items-center justify-center bg-secondary">
               <p className="text-muted-foreground">Ожидание подключения...</p>
             </div>
-          )}
+          ) : null}
           <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm px-3 py-1 rounded-full">
             <p className="text-sm text-foreground">Собеседник</p>
           </div>
