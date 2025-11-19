@@ -9,8 +9,7 @@
     "preview": "vite preview --port 3000",
     "start": "vite preview --port 3000",
     "build:dev": "vite build --mode development",
-    "lint": "eslint .",
-    "preview": "vite preview"
+    "lint": "eslint ."
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
