@@ -5,6 +5,16 @@ import { supabase } from "@/integrations/supabase/client";
 import JoinRequestDialog from "./JoinRequestDialog";
 import { useNavigate } from "react-router-dom";
 
+type ConnectionStatus = 
+  | "initializing"
+  | "waiting_for_participant"
+  | "requesting_approval"
+  | "signaling"
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "failed";
+
 interface VideoCallProps {
   roomId: string;
   isCameraOn: boolean;
@@ -28,13 +38,17 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
   const [showJoinRequest, setShowJoinRequest] = useState(false);
   const [pendingJoinerId, setPendingJoinerId] = useState<string | null>(null);
   const [userDisconnected, setUserDisconnected] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("initializing");
+  const retryCountRef = useRef(0);
+  const maxRetries = 3;
 
   // Initialize media stream
   useEffect(() => {
     console.log('🎥 Initializing media stream...');
+    setConnectionStatus("initializing");
+    
     const initMediaStream = async () => {
       try {
-        // Improved constraints with fallbacks for Android compatibility
         const constraints = {
           video: {
             width: { ideal: 1280, max: 1920 },
@@ -45,7 +59,8 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
-            autoGainControl: true
+            autoGainControl: true,
+            sampleRate: 48000
           }
         };
 
@@ -53,7 +68,6 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         try {
           stream = await navigator.mediaDevices.getUserMedia(constraints);
         } catch (error) {
-          // Fallback to basic constraints for older Android devices
           console.warn('⚠️ Failed with ideal constraints, trying basic...', error);
           stream = await navigator.mediaDevices.getUserMedia({
             video: true,
@@ -65,7 +79,6 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         localStreamRef.current = stream;
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
-          // Explicitly play for Android compatibility
           try {
             await localVideoRef.current.play();
           } catch (playError) {
@@ -73,8 +86,10 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           }
         }
         setIsMediaReady(true);
+        setConnectionStatus("waiting_for_participant");
       } catch (error) {
         console.error("❌ Error accessing media devices:", error);
+        setConnectionStatus("failed");
         toast({
           title: "Ошибка доступа к камере",
           description: "Не удалось получить доступ к камере или микрофону",
@@ -130,6 +145,8 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         iceServers: [
           { urls: "stun:stun.l.google.com:19302" },
           { urls: "stun:stun1.l.google.com:19302" },
+          { urls: "stun:stun2.l.google.com:19302" },
+          { urls: "stun:stun3.l.google.com:19302" },
           {
             urls: "turn:openrelay.metered.ca:80",
             username: "openrelayproject",
@@ -147,6 +164,9 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           },
         ],
         iceCandidatePoolSize: 10,
+        iceTransportPolicy: 'all',
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
       });
       peerConnectionRef.current = peerConnection;
 
@@ -197,11 +217,49 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
 
       peerConnection.onconnectionstatechange = () => {
         console.log('🔌 Connection state:', peerConnection.connectionState);
-        onConnectionStateChange?.(peerConnection.connectionState);
+        const state = peerConnection.connectionState;
+        
+        if (state === 'connected') {
+          setConnectionStatus('connected');
+          retryCountRef.current = 0;
+        } else if (state === 'connecting') {
+          setConnectionStatus('connecting');
+        } else if (state === 'disconnected') {
+          setConnectionStatus('disconnected');
+          // Attempt reconnection
+          if (retryCountRef.current < maxRetries) {
+            console.log(`🔄 Attempting reconnection (${retryCountRef.current + 1}/${maxRetries})`);
+            retryCountRef.current++;
+            setTimeout(() => {
+              if (isOrganizerRef.current && peerConnection.signalingState === 'stable') {
+                createOffer();
+              }
+            }, 2000 * retryCountRef.current);
+          }
+        } else if (state === 'failed') {
+          setConnectionStatus('failed');
+          toast({
+            title: "Ошибка подключения",
+            description: "Не удалось установить соединение. Попробуйте перезагрузить страницу.",
+            variant: "destructive",
+          });
+        }
+        
+        onConnectionStateChange?.(state);
       };
 
       peerConnection.oniceconnectionstatechange = () => {
-        console.log('❄️ ICE state:', peerConnection.iceConnectionState);
+        const iceState = peerConnection.iceConnectionState;
+        console.log('❄️ ICE state:', iceState);
+        
+        if (iceState === 'checking') {
+          setConnectionStatus('connecting');
+        } else if (iceState === 'connected' || iceState === 'completed') {
+          setConnectionStatus('connected');
+        } else if (iceState === 'failed') {
+          console.log('❌ ICE connection failed, attempting restart');
+          peerConnection.restartIce();
+        }
       };
 
       let hasCreatedOffer = false;
@@ -215,12 +273,14 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           return;
         }
         hasCreatedOffer = true;
+        setConnectionStatus('signaling');
         
         try {
           console.log('📞 Creating offer');
           const offer = await peerConnection.createOffer({
             offerToReceiveAudio: true,
             offerToReceiveVideo: true,
+            iceRestart: retryCountRef.current > 0,
           });
           await peerConnection.setLocalDescription(offer);
           
@@ -233,6 +293,18 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         } catch (error) {
           console.error('❌ Error creating offer:', error);
           hasCreatedOffer = false;
+          setConnectionStatus('failed');
+          
+          // Retry with exponential backoff
+          if (retryCountRef.current < maxRetries) {
+            const delay = 1000 * Math.pow(2, retryCountRef.current);
+            console.log(`🔄 Retrying offer in ${delay}ms`);
+            setTimeout(() => {
+              hasCreatedOffer = false;
+              createOffer();
+            }, delay);
+            retryCountRef.current++;
+          }
         }
       };
 
@@ -256,6 +328,9 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             presence: {
               key: clientId,
             },
+            broadcast: {
+              ack: true,
+            },
           },
         })
         .on('presence', { event: 'sync' }, () => {
@@ -278,13 +353,14 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           console.log('👋 Participant joined:', key);
           
           if (key !== clientId) {
-            // Reset disconnected state when a new participant joins
             setUserDisconnected(false);
             setIsRemoteConnected(false);
+            setConnectionStatus('waiting_for_participant');
           }
           
           if (isOrganizerRef.current && key !== clientId) {
             console.log('🔔 Organizer: showing approval dialog for joiner:', key);
+            setConnectionStatus('requesting_approval');
             setPendingJoinerId(key);
             setShowJoinRequest(true);
           }
@@ -349,23 +425,26 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           }
           
           hasProcessedOffer = true;
+          setConnectionStatus('signaling');
           
           console.log('📨 Processing offer from organizer');
           try {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.offer));
             console.log('✅ Remote description set from offer');
             
-            // Add pending ICE candidates
+            // Add pending ICE candidates in order
+            console.log(`📦 Processing ${pendingIceCandidates.length} pending ICE candidates`);
             for (const candidate of pendingIceCandidates) {
               try {
                 await peerConnection.addIceCandidate(candidate);
-                console.log('✅ Added pending ICE candidate');
+                console.log('✅ Added pending ICE candidate:', candidate.type);
               } catch (e) {
                 console.warn('⚠️ ICE candidate error:', e);
               }
             }
             pendingIceCandidates.length = 0;
             
+            setConnectionStatus('connecting');
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
             console.log('✅ Answer created');
@@ -379,6 +458,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           } catch (error) {
             console.error('❌ Offer processing error:', error);
             hasProcessedOffer = false;
+            setConnectionStatus('failed');
           }
         })
         .on('broadcast', { event: 'webrtc_answer' }, async ({ payload }) => {
@@ -395,15 +475,18 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           }
           
           console.log('📨 Organizer processing answer from joiner');
+          setConnectionStatus('connecting');
+          
           try {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.answer));
             console.log('✅ Answer processed, remote description set');
             
-            // Add pending ICE candidates
+            // Add pending ICE candidates in order
+            console.log(`📦 Processing ${pendingIceCandidates.length} pending ICE candidates`);
             for (const candidate of pendingIceCandidates) {
               try {
                 await peerConnection.addIceCandidate(candidate);
-                console.log('✅ Added pending ICE candidate');
+                console.log('✅ Added pending ICE candidate:', candidate.type);
               } catch (e) {
                 console.warn('⚠️ ICE candidate error:', e);
               }
@@ -412,6 +495,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             console.log('✅ Connection setup complete');
           } catch (error) {
             console.error('❌ Answer processing error:', error);
+            setConnectionStatus('failed');
           }
         })
         .on('broadcast', { event: 'webrtc_candidate' }, async ({ payload }) => {
@@ -452,8 +536,10 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             console.log('✅ Channel subscribed, tracking presence...');
             await channel.track({ online_at: new Date().toISOString() });
             console.log('✅ Presence tracked');
+            setConnectionStatus('waiting_for_participant');
           } else if (status === 'CHANNEL_ERROR') {
             console.error('❌ Channel error');
+            setConnectionStatus('failed');
             toast({
               title: "Ошибка подключения",
               description: "Не удалось подключиться к каналу",
@@ -461,6 +547,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             });
           } else if (status === 'TIMED_OUT') {
             console.error('❌ Channel timed out');
+            setConnectionStatus('failed');
             toast({
               title: "Превышено время ожидания",
               description: "Попробуйте перезагрузить страницу",
@@ -538,8 +625,29 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
               <p className="text-muted-foreground">Пользователь покинул встречу</p>
             </div>
           ) : !isRemoteConnected ? (
-            <div className="absolute inset-0 flex items-center justify-center bg-secondary">
-              <p className="text-muted-foreground">Ожидание подключения...</p>
+            <div className="absolute inset-0 flex flex-col items-center justify-center bg-secondary gap-3">
+              <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin" />
+              <div className="text-center">
+                <p className="text-muted-foreground font-medium">
+                  {connectionStatus === 'initializing' && 'Инициализация...'}
+                  {connectionStatus === 'waiting_for_participant' && 'Ожидание участника...'}
+                  {connectionStatus === 'requesting_approval' && 'Запрос на подключение...'}
+                  {connectionStatus === 'signaling' && 'Обмен сигналами...'}
+                  {connectionStatus === 'connecting' && 'Установка соединения...'}
+                  {connectionStatus === 'disconnected' && 'Переподключение...'}
+                  {connectionStatus === 'failed' && 'Ошибка подключения'}
+                </p>
+                {connectionStatus === 'waiting_for_participant' && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Поделитесь ссылкой на комнату
+                  </p>
+                )}
+                {retryCountRef.current > 0 && connectionStatus === 'disconnected' && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Попытка {retryCountRef.current} из {maxRetries}
+                  </p>
+                )}
+              </div>
             </div>
           ) : null}
           <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm px-3 py-1 rounded-full">
