@@ -4,10 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "startprod": "vite preview --port 3000",
     "start": "vite preview --port 3000",
     "dev": "vite",
     "build": "vite build",
+    "startprod": "npm run build && vite preview --port 3000",
     "preview": "vite preview --port 3000",
     "build:dev": "vite build --mode development",
     "lint": "eslint ."
