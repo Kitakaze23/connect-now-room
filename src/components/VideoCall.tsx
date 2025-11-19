@@ -34,15 +34,43 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
     console.log('🎥 Initializing media stream...');
     const initMediaStream = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
-          audio: true,
-        });
+        // Improved constraints with fallbacks for Android compatibility
+        const constraints = {
+          video: {
+            width: { ideal: 1280, max: 1920 },
+            height: { ideal: 720, max: 1080 },
+            frameRate: { ideal: 30, max: 30 },
+            facingMode: "user"
+          },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        };
+
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (error) {
+          // Fallback to basic constraints for older Android devices
+          console.warn('⚠️ Failed with ideal constraints, trying basic...', error);
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true,
+          });
+        }
         
         console.log('✅ Media stream obtained');
         localStreamRef.current = stream;
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
+          // Explicitly play for Android compatibility
+          try {
+            await localVideoRef.current.play();
+          } catch (playError) {
+            console.warn('⚠️ Local video autoplay prevented:', playError);
+          }
         }
         setIsMediaReady(true);
       } catch (error) {
@@ -133,6 +161,34 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         console.log('📹 Remote track received:', event.track.kind);
         if (remoteVideoRef.current && event.streams[0]) {
           remoteVideoRef.current.srcObject = event.streams[0];
+          
+          // Explicitly play remote video for Android compatibility
+          const playRemoteVideo = async () => {
+            try {
+              // Small delay to ensure stream is ready
+              await new Promise(resolve => setTimeout(resolve, 100));
+              if (remoteVideoRef.current) {
+                await remoteVideoRef.current.play();
+                console.log('✅ Remote video playing');
+              }
+            } catch (playError) {
+              console.warn('⚠️ Remote video autoplay prevented, will retry on user interaction:', playError);
+              // Add click handler to play on user interaction
+              const playOnInteraction = async () => {
+                try {
+                  await remoteVideoRef.current?.play();
+                  document.removeEventListener('click', playOnInteraction);
+                  document.removeEventListener('touchstart', playOnInteraction);
+                } catch (e) {
+                  console.error('Failed to play on interaction:', e);
+                }
+              };
+              document.addEventListener('click', playOnInteraction, { once: true });
+              document.addEventListener('touchstart', playOnInteraction, { once: true });
+            }
+          };
+          
+          playRemoteVideo();
           setIsRemoteConnected(true);
           onConnectionChange(true);
           console.log('✅ Remote stream connected');
@@ -474,6 +530,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             ref={remoteVideoRef}
             autoPlay
             playsInline
+            muted={false}
             className="w-full h-full object-cover"
           />
           {userDisconnected ? (
