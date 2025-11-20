@@ -39,8 +39,11 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
   const [pendingJoinerId, setPendingJoinerId] = useState<string | null>(null);
   const [userDisconnected, setUserDisconnected] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("initializing");
+  const [callDuration, setCallDuration] = useState(0);
   const retryCountRef = useRef(0);
   const maxRetries = 3;
+  const callTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const maxCallDuration = 1800; // 30 минут в секундах
 
   // Initialize media stream
   useEffect(() => {
@@ -129,6 +132,46 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
       }
     }
   }, [isMicOn]);
+
+  // Call timer - starts when connected
+  useEffect(() => {
+    if (connectionStatus === 'connected') {
+      console.log('⏱️ Starting call timer');
+      setCallDuration(0);
+      
+      callTimerRef.current = setInterval(() => {
+        setCallDuration(prev => {
+          const newDuration = prev + 1;
+          
+          // Auto-disconnect after max duration
+          if (newDuration >= maxCallDuration) {
+            console.log('⏱️ Max call duration reached');
+            toast({
+              title: "Время звонка истекло",
+              description: "Максимальная продолжительность звонка 30 минут",
+            });
+            navigate('/');
+            return prev;
+          }
+          
+          return newDuration;
+        });
+      }, 1000);
+    } else {
+      // Stop timer when not connected
+      if (callTimerRef.current) {
+        clearInterval(callTimerRef.current);
+        callTimerRef.current = null;
+      }
+    }
+
+    return () => {
+      if (callTimerRef.current) {
+        clearInterval(callTimerRef.current);
+        callTimerRef.current = null;
+      }
+    };
+  }, [connectionStatus, navigate, toast]);
 
   // WebRTC setup with Supabase Realtime for signaling
   useEffect(() => {
@@ -604,6 +647,13 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
     setPendingJoinerId(null);
   };
 
+  // Format call duration as MM:SS
+  const formatCallDuration = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
   return (
     <>
       <JoinRequestDialog
@@ -653,6 +703,13 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm px-3 py-1 rounded-full">
             <p className="text-sm text-foreground">Собеседник</p>
           </div>
+          {connectionStatus === 'connected' && (
+            <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-background/90 backdrop-blur-sm px-4 py-2 rounded-full shadow-lg">
+              <p className="text-lg font-semibold text-foreground tabular-nums">
+                {formatCallDuration(callDuration)}
+              </p>
+            </div>
+          )}
         </Card>
 
         <Card className="relative bg-secondary border-border overflow-hidden aspect-video">
