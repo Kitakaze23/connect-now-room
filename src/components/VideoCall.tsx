@@ -700,11 +700,17 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
               </div>
             </div>
           ) : null}
-          <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm px-3 py-1 rounded-full">
-            <p className="text-sm text-foreground">Собеседник</p>
-          </div>
+          {userDisconnected ? (
+            <div className="absolute inset-0 bg-black flex items-center justify-center">
+              <p className="text-white text-xl font-medium">Собеседник покинул встречу</p>
+            </div>
+          ) : (
+            <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm px-3 py-1 rounded-full">
+              <p className="text-sm text-foreground">Собеседник</p>
+            </div>
+          )}
           {connectionStatus === 'connected' && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-background/90 backdrop-blur-sm px-4 py-2 rounded-full shadow-lg">
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-background/90 backdrop-blur-sm px-4 py-2 rounded-full shadow-lg">
               <p className="text-lg font-semibold text-foreground tabular-nums">
                 {formatCallDuration(callDuration)}
               </p>
