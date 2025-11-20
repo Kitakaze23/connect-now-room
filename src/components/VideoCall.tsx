@@ -217,10 +217,14 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
       
       const peerConnection = new RTCPeerConnection({
         iceServers: [
+          // Multiple STUN servers for better NAT traversal
           { urls: "stun:stun.l.google.com:19302" },
           { urls: "stun:stun1.l.google.com:19302" },
           { urls: "stun:stun2.l.google.com:19302" },
           { urls: "stun:stun3.l.google.com:19302" },
+          { urls: "stun:stun4.l.google.com:19302" },
+          
+          // Primary TURN servers (Metered)
           {
             urls: "turn:openrelay.metered.ca:80",
             username: "openrelayproject",
@@ -236,10 +240,38 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             username: "openrelayproject",
             credential: "openrelayproject",
           },
+          
+          // Backup TURN servers (Numb)
+          {
+            urls: "turn:numb.viagenie.ca",
+            username: "webrtc@live.com",
+            credential: "muazkh",
+          },
+          {
+            urls: "turn:numb.viagenie.ca:3478?transport=tcp",
+            username: "webrtc@live.com",
+            credential: "muazkh",
+          },
+          
+          // Additional backup TURN servers
+          {
+            urls: "turn:relay.metered.ca:80",
+            username: "85d76e46be6d5e65d6e85ba1",
+            credential: "tXUXVrMT8Rbr1w0N",
+          },
+          {
+            urls: "turn:relay.metered.ca:443",
+            username: "85d76e46be6d5e65d6e85ba1",
+            credential: "tXUXVrMT8Rbr1w0N",
+          },
         ],
-        iceCandidatePoolSize: 10,
+        // Increased pool size for faster connection establishment
+        iceCandidatePoolSize: 20,
+        // Try all connection types (direct P2P and relay through TURN)
         iceTransportPolicy: 'all',
+        // Bundle all media on single connection for better NAT traversal
         bundlePolicy: 'max-bundle',
+        // Multiplex RTP and RTCP on single port for better firewall traversal
         rtcpMuxPolicy: 'require',
       });
       peerConnectionRef.current = peerConnection;
