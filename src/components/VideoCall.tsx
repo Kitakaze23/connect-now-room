@@ -385,7 +385,9 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
       let hasCreatedOffer = false;
       let hasProcessedOffer = false;
       const pendingIceCandidates: RTCIceCandidate[] = [];
-      let approvedJoinerId: string | null = null;
+      let localIceCandidates: RTCIceCandidate[] = [];
+      let iceGatheringComplete = false;
+      let pendingOffer: any = null;
 
       const createOffer = async () => {
         if (hasCreatedOffer) {
@@ -397,6 +399,11 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         
         try {
           console.log('📞 Creating offer');
+          
+          // Reset ICE candidates collection
+          localIceCandidates = [];
+          iceGatheringComplete = false;
+          
           const offer = await peerConnection.createOffer({
             offerToReceiveAudio: true,
             offerToReceiveVideo: true,
@@ -404,11 +411,36 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           });
           await peerConnection.setLocalDescription(offer);
           
-          console.log('📤 Broadcasting offer');
+          // Wait for ICE gathering to complete or timeout after 3 seconds
+          console.log('⏳ Waiting for ICE gathering...');
+          await Promise.race([
+            new Promise<void>((resolve) => {
+              if (iceGatheringComplete) {
+                resolve();
+              } else {
+                const checkInterval = setInterval(() => {
+                  if (iceGatheringComplete) {
+                    clearInterval(checkInterval);
+                    resolve();
+                  }
+                }, 100);
+              }
+            }),
+            new Promise<void>((resolve) => setTimeout(resolve, 3000))
+          ]);
+          
+          console.log(`📤 Broadcasting offer with ${localIceCandidates.length} ICE candidates`);
           channel.send({
             type: 'broadcast',
             event: 'webrtc_offer',
-            payload: { offer, from: clientId }
+            payload: { 
+              offer: {
+                type: offer.type,
+                sdp: offer.sdp
+              },
+              candidates: localIceCandidates.map(c => c.toJSON()),
+              from: clientId 
+            }
           });
         } catch (error) {
           console.error('❌ Error creating offer:', error);
@@ -428,17 +460,14 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         }
       };
 
-      // ICE candidate handler
+      // ICE candidate handler - collect candidates instead of sending immediately
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-          console.log('📤 Sending ICE candidate:', event.candidate.type);
-          channel.send({
-            type: 'broadcast',
-            event: 'webrtc_candidate',
-            payload: { candidate: event.candidate, from: clientId }
-          });
+          console.log('📦 ICE candidate gathered:', event.candidate.type);
+          localIceCandidates.push(event.candidate);
         } else {
           console.log('✅ ICE gathering complete');
+          iceGatheringComplete = true;
         }
       };
 
@@ -513,12 +542,91 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
               description: "Установка соединения...",
             });
             
-            // Send ready signal back to organizer
-            await channel.send({
-              type: 'broadcast',
-              event: 'joiner_ready',
-              payload: { joinerId: clientId }
-            });
+            // Process buffered offer if it exists
+            if (pendingOffer) {
+              console.log('📦 Processing buffered offer');
+              const bufferedOffer = pendingOffer;
+              pendingOffer = null;
+              
+              // Process the offer immediately
+              setTimeout(async () => {
+                if (!hasProcessedOffer) {
+                  hasProcessedOffer = true;
+                  setConnectionStatus('signaling');
+                  
+                  try {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(bufferedOffer.offer));
+                    console.log('✅ Remote description set from buffered offer');
+                    
+                    // Add ICE candidates from offer
+                    if (bufferedOffer.candidates && bufferedOffer.candidates.length > 0) {
+                      console.log(`📦 Adding ${bufferedOffer.candidates.length} ICE candidates from buffered offer`);
+                      for (const candidate of bufferedOffer.candidates) {
+                        try {
+                          await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                          console.log('✅ Added ICE candidate:', candidate.type);
+                        } catch (e) {
+                          console.warn('⚠️ ICE candidate error:', e);
+                        }
+                      }
+                    }
+                    
+                    setConnectionStatus('connecting');
+                    
+                    // Reset for answer
+                    localIceCandidates = [];
+                    iceGatheringComplete = false;
+                    
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    console.log('✅ Answer created from buffered offer');
+                    
+                    // Wait for ICE gathering
+                    console.log('⏳ Waiting for ICE gathering...');
+                    await Promise.race([
+                      new Promise<void>((resolve) => {
+                        if (iceGatheringComplete) {
+                          resolve();
+                        } else {
+                          const checkInterval = setInterval(() => {
+                            if (iceGatheringComplete) {
+                              clearInterval(checkInterval);
+                              resolve();
+                            }
+                          }, 100);
+                        }
+                      }),
+                      new Promise<void>((resolve) => setTimeout(resolve, 3000))
+                    ]);
+                    
+                    console.log(`📤 Sending answer with ${localIceCandidates.length} ICE candidates`);
+                    channel.send({
+                      type: 'broadcast',
+                      event: 'webrtc_answer',
+                      payload: { 
+                        answer: {
+                          type: answer.type,
+                          sdp: answer.sdp
+                        },
+                        candidates: localIceCandidates.map(c => c.toJSON()),
+                        from: clientId 
+                      }
+                    });
+                  } catch (error) {
+                    console.error('❌ Buffered offer processing error:', error);
+                    hasProcessedOffer = false;
+                    setConnectionStatus('failed');
+                  }
+                }
+              }, 100);
+            } else {
+              // Send ready signal back to organizer
+              await channel.send({
+                type: 'broadcast',
+                event: 'joiner_ready',
+                payload: { joinerId: clientId }
+              });
+            }
           }
         })
         .on('broadcast', { event: 'join_rejected' }, ({ payload }) => {
@@ -558,8 +666,10 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             return;
           }
           
+          // If not approved yet, save the offer for later
           if (!isApprovedRef.current) {
-            console.log('⏭️ Not approved yet, skipping offer');
+            console.log('📦 Not approved yet, buffering offer');
+            pendingOffer = payload;
             return;
           }
           
@@ -576,28 +686,59 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.offer));
             console.log('✅ Remote description set from offer');
             
-            // Add pending ICE candidates in order
-            console.log(`📦 Processing ${pendingIceCandidates.length} pending ICE candidates`);
-            for (const candidate of pendingIceCandidates) {
-              try {
-                await peerConnection.addIceCandidate(candidate);
-                console.log('✅ Added pending ICE candidate:', candidate.type);
-              } catch (e) {
-                console.warn('⚠️ ICE candidate error:', e);
+            // Add ICE candidates from offer
+            if (payload.candidates && payload.candidates.length > 0) {
+              console.log(`📦 Adding ${payload.candidates.length} ICE candidates from offer`);
+              for (const candidate of payload.candidates) {
+                try {
+                  await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                  console.log('✅ Added ICE candidate:', candidate.type);
+                } catch (e) {
+                  console.warn('⚠️ ICE candidate error:', e);
+                }
               }
             }
-            pendingIceCandidates.length = 0;
             
             setConnectionStatus('connecting');
+            
+            // Reset for answer
+            localIceCandidates = [];
+            iceGatheringComplete = false;
+            
             const answer = await peerConnection.createAnswer();
             await peerConnection.setLocalDescription(answer);
             console.log('✅ Answer created');
             
-            console.log('📤 Sending answer to organizer');
+            // Wait for ICE gathering
+            console.log('⏳ Waiting for ICE gathering...');
+            await Promise.race([
+              new Promise<void>((resolve) => {
+                if (iceGatheringComplete) {
+                  resolve();
+                } else {
+                  const checkInterval = setInterval(() => {
+                    if (iceGatheringComplete) {
+                      clearInterval(checkInterval);
+                      resolve();
+                    }
+                  }, 100);
+                }
+              }),
+              new Promise<void>((resolve) => setTimeout(resolve, 3000))
+            ]);
+            
+            console.log(`📤 Sending answer with ${localIceCandidates.length} ICE candidates`);
             channel.send({
               type: 'broadcast',
               event: 'webrtc_answer',
-              payload: { answer, from: clientId }
+              payload: { 
+                answer: {
+                  type: answer.type,
+                  sdp: answer.sdp
+                },
+                candidates: localIceCandidates.map(c => c.toJSON()),
+                from: clientId 
+              }
             });
           } catch (error) {
             console.error('❌ Offer processing error:', error);
@@ -625,42 +766,23 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             await peerConnection.setRemoteDescription(new RTCSessionDescription(payload.answer));
             console.log('✅ Answer processed, remote description set');
             
-            // Add pending ICE candidates in order
-            console.log(`📦 Processing ${pendingIceCandidates.length} pending ICE candidates`);
-            for (const candidate of pendingIceCandidates) {
-              try {
-                await peerConnection.addIceCandidate(candidate);
-                console.log('✅ Added pending ICE candidate:', candidate.type);
-              } catch (e) {
-                console.warn('⚠️ ICE candidate error:', e);
+            // Add ICE candidates from answer
+            if (payload.candidates && payload.candidates.length > 0) {
+              console.log(`📦 Adding ${payload.candidates.length} ICE candidates from answer`);
+              for (const candidate of payload.candidates) {
+                try {
+                  await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                  console.log('✅ Added ICE candidate:', candidate.type);
+                } catch (e) {
+                  console.warn('⚠️ ICE candidate error:', e);
+                }
               }
             }
-            pendingIceCandidates.length = 0;
+            
             console.log('✅ Connection setup complete');
           } catch (error) {
             console.error('❌ Answer processing error:', error);
             setConnectionStatus('failed');
-          }
-        })
-        .on('broadcast', { event: 'webrtc_candidate' }, async ({ payload }) => {
-          if (payload.from === clientId) {
-            return;
-          }
-          
-          console.log('📨 ICE candidate received from:', payload.from, 'Type:', payload.candidate.type);
-          
-          try {
-            const candidate = new RTCIceCandidate(payload.candidate);
-            
-            if (peerConnection.remoteDescription && peerConnection.remoteDescription.type) {
-              await peerConnection.addIceCandidate(candidate);
-              console.log('✅ ICE candidate added immediately:', payload.candidate.type);
-            } else {
-              console.log('📦 Queueing ICE candidate (no remote description yet)');
-              pendingIceCandidates.push(candidate);
-            }
-          } catch (e) {
-            console.error('❌ ICE candidate error:', e, payload.candidate);
           }
         })
         .subscribe(async (status) => {
