@@ -420,6 +420,8 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
       let localIceCandidates: RTCIceCandidate[] = [];
       let iceGatheringComplete = false;
       let pendingOffer: any = null;
+      let offerSent = false;
+      let answerSent = false;
 
       const createOffer = async () => {
         if (hasCreatedOffer) {
@@ -462,6 +464,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           ]);
           
           console.log(`📤 Broadcasting offer with ${localIceCandidates.length} ICE candidates`);
+          offerSent = true;
           channel.send({
             type: 'broadcast',
             event: 'webrtc_offer',
@@ -492,11 +495,24 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         }
       };
 
-      // ICE candidate handler - collect candidates instead of sending immediately
+      // ICE candidate handler - collect and send candidates
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
           console.log('📦 ICE candidate gathered:', event.candidate.type);
           localIceCandidates.push(event.candidate);
+          
+          // Send additional candidates after offer/answer is sent
+          if (offerSent || answerSent) {
+            console.log('📤 Sending additional ICE candidate');
+            channel.send({
+              type: 'broadcast',
+              event: 'ice_candidate',
+              payload: {
+                candidate: event.candidate.toJSON(),
+                from: clientId
+              }
+            });
+          }
         } else {
           console.log('✅ ICE gathering complete');
           iceGatheringComplete = true;
@@ -632,6 +648,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
                     ]);
                     
                     console.log(`📤 Sending answer with ${localIceCandidates.length} ICE candidates`);
+                    answerSent = true;
                     channel.send({
                       type: 'broadcast',
                       event: 'webrtc_answer',
@@ -760,6 +777,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             ]);
             
             console.log(`📤 Sending answer with ${localIceCandidates.length} ICE candidates`);
+            answerSent = true;
             channel.send({
               type: 'broadcast',
               event: 'webrtc_answer',
@@ -815,6 +833,27 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           } catch (error) {
             console.error('❌ Answer processing error:', error);
             setConnectionStatus('failed');
+          }
+        })
+        .on('broadcast', { event: 'ice_candidate' }, async ({ payload }) => {
+          if (payload.from === clientId) {
+            return;
+          }
+          
+          console.log('📥 Received additional ICE candidate');
+          
+          try {
+            // Buffer if remote description not set yet
+            if (!peerConnection.remoteDescription) {
+              console.log('⏸️ Buffering ICE candidate (no remote description)');
+              pendingIceCandidates.push(new RTCIceCandidate(payload.candidate));
+              return;
+            }
+            
+            await peerConnection.addIceCandidate(new RTCIceCandidate(payload.candidate));
+            console.log('✅ Additional ICE candidate added');
+          } catch (error) {
+            console.error('❌ Error adding ICE candidate:', error);
           }
         })
         .subscribe(async (status) => {
