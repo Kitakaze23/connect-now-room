@@ -466,7 +466,11 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             isApprovedRef.current = true;
             console.log('👑 ORGANIZER');
           } else {
-            console.log('👤 JOINER');
+            console.log('👤 JOINER - waiting for approval');
+            // Joiner should show that they're requesting approval
+            if (participants.length > 1) {
+              setConnectionStatus('requesting_approval');
+            }
           }
         })
         .on('presence', { event: 'join' }, ({ key }) => {
@@ -502,6 +506,13 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           if (payload.joinerId === clientId) {
             console.log('✅ I am the approved joiner, ready to receive offer');
             isApprovedRef.current = true;
+            setConnectionStatus('signaling');
+            
+            toast({
+              title: "Подключение одобрено",
+              description: "Установка соединения...",
+            });
+            
             // Send ready signal back to organizer
             await channel.send({
               type: 'broadcast',
