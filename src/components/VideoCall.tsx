@@ -290,8 +290,8 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
       };
 
       peerConnection.onconnectionstatechange = () => {
-        console.log('🔌 Connection state:', peerConnection.connectionState);
         const state = peerConnection.connectionState;
+        console.log('🔌 Connection state:', state);
         
         if (state === 'connected') {
           setConnectionStatus('connected');
@@ -301,41 +301,49 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         } else if (state === 'disconnected') {
           setConnectionStatus('disconnected');
           setIsRemoteConnected(false);
-          // Attempt reconnection
-          if (retryCountRef.current < maxRetries) {
-            console.log(`🔄 Attempting reconnection (${retryCountRef.current + 1}/${maxRetries})`);
+          // Attempt reconnection only if not already at max retries
+          if (retryCountRef.current < maxRetries && isOrganizerRef.current) {
             retryCountRef.current++;
+            console.log(`🔄 Attempting reconnection (${retryCountRef.current}/${maxRetries})`);
+            
             setTimeout(() => {
-              // Clean up old connection before retry
-              if (peerConnectionRef.current) {
-                peerConnectionRef.current.close();
-                peerConnectionRef.current = null;
-              }
-              if (isOrganizerRef.current && peerConnection.signalingState === 'stable') {
-                // Trigger full reconnection
-                setIsMediaReady(false);
-                setTimeout(() => setIsMediaReady(true), 100);
+              if (peerConnection.signalingState !== 'closed') {
+                console.log('🔄 Creating new offer for reconnection');
+                createOffer();
               }
             }, 2000 * retryCountRef.current);
-          } else {
-            setConnectionStatus('failed');
-            toast({
-              title: "Соединение потеряно",
-              description: "Не удалось восстановить соединение",
-              variant: "destructive",
-            });
           }
         } else if (state === 'failed') {
           setConnectionStatus('failed');
           setIsRemoteConnected(false);
-          toast({
-            title: "Ошибка подключения",
-            description: "Не удалось установить соединение. Попробуйте перезагрузить страницу.",
-            variant: "destructive",
-          });
+          
+          if (retryCountRef.current < maxRetries && isOrganizerRef.current) {
+            retryCountRef.current++;
+            console.log(`🔄 Connection failed, attempting recovery (${retryCountRef.current}/${maxRetries})`);
+            
+            setTimeout(() => {
+              if (peerConnection.signalingState !== 'closed') {
+                console.log('🔄 Restarting ICE and creating new offer');
+                peerConnection.restartIce();
+                createOffer();
+              }
+            }, 1000);
+          } else {
+            toast({
+              title: "Ошибка подключения",
+              description: "Не удалось установить соединение. Попробуйте перезагрузить страницу.",
+              variant: "destructive",
+            });
+          }
+        } else if (state === 'closed') {
+          console.log('🔌 Connection closed');
+          setConnectionStatus('disconnected');
+          setIsRemoteConnected(false);
         }
         
-        onConnectionStateChange?.(state);
+        if (state) {
+          onConnectionStateChange?.(state);
+        }
       };
 
       peerConnection.oniceconnectionstatechange = () => {
@@ -346,18 +354,30 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           setConnectionStatus('connecting');
         } else if (iceState === 'connected' || iceState === 'completed') {
           setConnectionStatus('connected');
-          retryCountRef.current = 0; // Reset retry counter on successful connection
+          retryCountRef.current = 0;
+          console.log('✅ ICE connection established successfully');
         } else if (iceState === 'failed') {
           console.log('❌ ICE connection failed');
           setConnectionStatus('failed');
           setIsRemoteConnected(false);
+          
           if (retryCountRef.current < maxRetries && isOrganizerRef.current) {
-            console.log('🔄 Attempting ICE restart');
             retryCountRef.current++;
-            peerConnection.restartIce();
+            console.log(`🔄 ICE failed, attempting restart (${retryCountRef.current}/${maxRetries})`);
+            
+            setTimeout(() => {
+              if (peerConnection.signalingState !== 'closed') {
+                peerConnection.restartIce();
+                createOffer();
+              }
+            }, 1000);
           }
         } else if (iceState === 'disconnected') {
           console.log('⚠️ ICE disconnected');
+          setIsRemoteConnected(false);
+          setConnectionStatus('disconnected');
+        } else if (iceState === 'closed') {
+          console.log('❄️ ICE connection closed');
           setIsRemoteConnected(false);
         }
       };
@@ -632,16 +652,6 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             console.error('❌ ICE candidate error:', e, payload.candidate);
           }
         })
-        .on('broadcast', { event: 'join_rejected' }, ({ payload }) => {
-          if (payload.joinerId === clientId) {
-            toast({
-              title: "Подключение отклонено",
-              description: "Организатор отклонил запрос",
-              variant: "destructive",
-            });
-            setTimeout(() => navigate('/'), 2000);
-          }
-        })
         .subscribe(async (status) => {
           console.log('📡 Subscription status:', status);
           if (status === 'SUBSCRIBED') {
@@ -690,7 +700,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
     };
 
     setupWebRTC();
-  }, [roomId, onConnectionChange, isMediaReady, navigate, toast]);
+  }, [roomId, onConnectionChange, onConnectionStateChange, isMediaReady, navigate, toast]);
 
   const handleAcceptJoin = () => {
     setShowJoinRequest(false);
