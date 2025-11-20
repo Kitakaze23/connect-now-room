@@ -150,6 +150,10 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
     if (connectionStatus === 'connected') {
       console.log('⏱️ Starting call timer');
       
+      // Reset timer on connection
+      setCallDuration(0);
+      warningShownRef.current = false;
+      
       callTimerRef.current = setInterval(() => {
         setCallDuration(prev => {
           const newDuration = prev + 1;
@@ -182,7 +186,6 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         clearInterval(callTimerRef.current);
         callTimerRef.current = null;
       }
-      warningShownRef.current = false;
     }
 
     return () => {
@@ -289,18 +292,34 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           setConnectionStatus('connecting');
         } else if (state === 'disconnected') {
           setConnectionStatus('disconnected');
+          setIsRemoteConnected(false);
           // Attempt reconnection
           if (retryCountRef.current < maxRetries) {
             console.log(`🔄 Attempting reconnection (${retryCountRef.current + 1}/${maxRetries})`);
             retryCountRef.current++;
             setTimeout(() => {
+              // Clean up old connection before retry
+              if (peerConnectionRef.current) {
+                peerConnectionRef.current.close();
+                peerConnectionRef.current = null;
+              }
               if (isOrganizerRef.current && peerConnection.signalingState === 'stable') {
-                createOffer();
+                // Trigger full reconnection
+                setIsMediaReady(false);
+                setTimeout(() => setIsMediaReady(true), 100);
               }
             }, 2000 * retryCountRef.current);
+          } else {
+            setConnectionStatus('failed');
+            toast({
+              title: "Соединение потеряно",
+              description: "Не удалось восстановить соединение",
+              variant: "destructive",
+            });
           }
         } else if (state === 'failed') {
           setConnectionStatus('failed');
+          setIsRemoteConnected(false);
           toast({
             title: "Ошибка подключения",
             description: "Не удалось установить соединение. Попробуйте перезагрузить страницу.",
@@ -319,9 +338,19 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           setConnectionStatus('connecting');
         } else if (iceState === 'connected' || iceState === 'completed') {
           setConnectionStatus('connected');
+          retryCountRef.current = 0; // Reset retry counter on successful connection
         } else if (iceState === 'failed') {
-          console.log('❌ ICE connection failed, attempting restart');
-          peerConnection.restartIce();
+          console.log('❌ ICE connection failed');
+          setConnectionStatus('failed');
+          setIsRemoteConnected(false);
+          if (retryCountRef.current < maxRetries && isOrganizerRef.current) {
+            console.log('🔄 Attempting ICE restart');
+            retryCountRef.current++;
+            peerConnection.restartIce();
+          }
+        } else if (iceState === 'disconnected') {
+          console.log('⚠️ ICE disconnected');
+          setIsRemoteConnected(false);
         }
       };
 
@@ -446,11 +475,24 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             console.log('✅ I am the approved joiner, ready to receive offer');
             isApprovedRef.current = true;
             // Send ready signal back to organizer
-            channel.send({
+            await channel.send({
               type: 'broadcast',
               event: 'joiner_ready',
               payload: { joinerId: clientId }
             });
+          }
+        })
+        .on('broadcast', { event: 'join_rejected' }, ({ payload }) => {
+          console.log('❌ Join rejected. Joiner ID:', payload.joinerId, 'My ID:', clientId);
+          
+          if (payload.joinerId === clientId) {
+            console.log('❌ My join was rejected');
+            toast({
+              title: "Подключение отклонено",
+              description: "Организатор отклонил ваш запрос на подключение",
+              variant: "destructive",
+            });
+            navigate('/');
           }
         })
         .on('broadcast', { event: 'joiner_ready' }, async ({ payload }) => {
@@ -621,8 +663,21 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
 
       return () => {
         console.log('🧹 Cleanup');
-        channel.unsubscribe();
-        channelRef.current = null;
+        if (callTimerRef.current) {
+          clearInterval(callTimerRef.current);
+        }
+        if (peerConnectionRef.current) {
+          peerConnectionRef.current.close();
+          peerConnectionRef.current = null;
+        }
+        if (channelRef.current) {
+          channelRef.current.unsubscribe();
+          channelRef.current = null;
+        }
+        if (localStreamRef.current) {
+          localStreamRef.current.getTracks().forEach(track => track.stop());
+          localStreamRef.current = null;
+        }
       };
     };
 
@@ -748,16 +803,17 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
               </div>
             </div>
           ) : null}
-          {userDisconnected ? (
+          {userDisconnected && (
             <div className="absolute inset-0 bg-black flex items-center justify-center">
               <p className="text-white text-xl font-medium">Собеседник покинул встречу</p>
             </div>
-          ) : (
+          )}
+          {!userDisconnected && (
             <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm px-3 py-1 rounded-full">
               <p className="text-sm text-foreground">Собеседник</p>
             </div>
           )}
-          {connectionStatus === 'connected' && (
+          {connectionStatus === 'connected' && !userDisconnected && (
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-background/90 backdrop-blur-sm px-4 py-2 rounded-full shadow-lg">
               <p className="text-lg font-semibold text-foreground tabular-nums">
                 {formatCallDuration(callDuration)}
