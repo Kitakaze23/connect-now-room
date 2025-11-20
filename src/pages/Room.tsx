@@ -13,6 +13,13 @@ const Room = () => {
   const [isMicOn, setIsMicOn] = useState(true);
   const [isConnected, setIsConnected] = useState(false);
   const [connectionState, setConnectionState] = useState<RTCPeerConnectionState>("new");
+  const [callDuration, setCallDuration] = useState(0);
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
 
   const copyRoomLink = () => {
     const link = `${window.location.origin}/room/${roomId}`;
@@ -35,7 +42,7 @@ const Room = () => {
           <div>
             <h1 className="text-xl font-semibold text-foreground">Видеозвонок</h1>
             <p className="text-sm text-muted-foreground">ID комнаты: {roomId}</p>
-            <div className="mt-2">
+            <div className="mt-2 flex items-center gap-4">
               {(connectionState === "connecting" || connectionState === "new") && (
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-yellow-500/10 border border-yellow-500/20 rounded-full">
                   <div className="w-2 h-2 bg-yellow-500 rounded-full animate-pulse" />
@@ -76,17 +83,16 @@ const Room = () => {
                   </span>
                 </div>
               )}
+              
+              {connectionState === "connected" && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-primary/10 border border-primary/20 rounded-full">
+                  <span className="text-sm text-primary font-medium">
+                    {formatTime(callDuration)}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={copyRoomLink}
-            className="gap-2"
-          >
-            <Copy className="w-4 h-4" />
-            Скопировать ссылку
-          </Button>
         </div>
       </header>
 
@@ -98,7 +104,23 @@ const Room = () => {
           isMicOn={isMicOn}
           onConnectionChange={setIsConnected}
           onConnectionStateChange={setConnectionState}
+          onCallDurationChange={setCallDuration}
         />
+      </div>
+
+      {/* Copy Link Button */}
+      <div className="px-6 pb-4">
+        <div className="max-w-7xl mx-auto flex justify-center">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={copyRoomLink}
+            className="gap-2"
+          >
+            <Copy className="w-4 h-4" />
+            Скопировать ссылку
+          </Button>
+        </div>
       </div>
 
       {/* Controls */}

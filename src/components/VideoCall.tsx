@@ -31,9 +31,10 @@ interface VideoCallProps {
   isMicOn: boolean;
   onConnectionChange: (connected: boolean) => void;
   onConnectionStateChange?: (state: RTCPeerConnectionState) => void;
+  onCallDurationChange?: (duration: number) => void;
 }
 
-const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnectionStateChange }: VideoCallProps) => {
+const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnectionStateChange, onCallDurationChange }: VideoCallProps) => {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
@@ -195,6 +196,13 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
       }
     };
   }, [connectionStatus, navigate, toast, maxCallDuration]);
+
+  // Notify parent component of call duration changes
+  useEffect(() => {
+    if (onCallDurationChange) {
+      onCallDurationChange(callDuration);
+    }
+  }, [callDuration, onCallDurationChange]);
 
   // WebRTC setup with Supabase Realtime for signaling
   useEffect(() => {
