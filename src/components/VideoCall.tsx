@@ -4,6 +4,16 @@ import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import JoinRequestDialog from "./JoinRequestDialog";
 import { useNavigate } from "react-router-dom";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 type ConnectionStatus = 
   | "initializing"
@@ -40,10 +50,12 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
   const [userDisconnected, setUserDisconnected] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("initializing");
   const [callDuration, setCallDuration] = useState(0);
+  const [showTimeWarning, setShowTimeWarning] = useState(false);
+  const [maxCallDuration, setMaxCallDuration] = useState(1800); // 30 минут в секундах
   const retryCountRef = useRef(0);
   const maxRetries = 3;
   const callTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const maxCallDuration = 1800; // 30 минут в секундах
+  const warningShownRef = useRef(false);
 
   // Initialize media stream
   useEffect(() => {
@@ -137,18 +149,25 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
   useEffect(() => {
     if (connectionStatus === 'connected') {
       console.log('⏱️ Starting call timer');
-      setCallDuration(0);
       
       callTimerRef.current = setInterval(() => {
         setCallDuration(prev => {
           const newDuration = prev + 1;
+          
+          // Show warning 5 minutes before end
+          const timeRemaining = maxCallDuration - newDuration;
+          if (timeRemaining === 300 && !warningShownRef.current) {
+            console.log('⚠️ 5 minutes remaining');
+            setShowTimeWarning(true);
+            warningShownRef.current = true;
+          }
           
           // Auto-disconnect after max duration
           if (newDuration >= maxCallDuration) {
             console.log('⏱️ Max call duration reached');
             toast({
               title: "Время звонка истекло",
-              description: "Максимальная продолжительность звонка 30 минут",
+              description: "Максимальная продолжительность звонка истекла",
             });
             navigate('/');
             return prev;
@@ -163,6 +182,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         clearInterval(callTimerRef.current);
         callTimerRef.current = null;
       }
+      warningShownRef.current = false;
     }
 
     return () => {
@@ -171,7 +191,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         callTimerRef.current = null;
       }
     };
-  }, [connectionStatus, navigate, toast]);
+  }, [connectionStatus, navigate, toast, maxCallDuration]);
 
   // WebRTC setup with Supabase Realtime for signaling
   useEffect(() => {
@@ -654,8 +674,36 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+  // Handle extending call time
+  const handleExtendTime = () => {
+    setMaxCallDuration(prev => prev + 1800); // Add 30 more minutes
+    setShowTimeWarning(false);
+    warningShownRef.current = false;
+    toast({
+      title: "Время продлено",
+      description: "Добавлено 30 минут к звонку",
+    });
+  };
+
   return (
     <>
+      <AlertDialog open={showTimeWarning} onOpenChange={setShowTimeWarning}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Звонок скоро завершится</AlertDialogTitle>
+            <AlertDialogDescription>
+              До окончания звонка осталось 5 минут. Хотите продлить время на 30 минут?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Продолжить без продления</AlertDialogCancel>
+            <AlertDialogAction onClick={handleExtendTime}>
+              Продлить на 30 минут
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <JoinRequestDialog
         open={showJoinRequest}
         onAccept={handleAcceptJoin}
