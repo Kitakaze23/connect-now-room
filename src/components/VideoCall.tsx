@@ -964,13 +964,6 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
               <p className="text-sm text-foreground">Собеседник</p>
             </div>
           )}
-          {connectionStatus === 'connected' && !userDisconnected && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-background/90 backdrop-blur-sm px-4 py-2 rounded-full shadow-lg">
-              <p className="text-lg font-semibold text-foreground tabular-nums">
-                {formatCallDuration(callDuration)}
-              </p>
-            </div>
-          )}
         </Card>
 
         <Card className="relative bg-secondary border-border overflow-hidden aspect-video">
