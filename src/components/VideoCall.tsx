@@ -57,6 +57,8 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
   const maxRetries = 3;
   const callTimerRef = useRef<NodeJS.Timeout | null>(null);
   const warningShownRef = useRef(false);
+  const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const dataChannelRef = useRef<RTCDataChannel | null>(null);
 
   // Initialize media stream
   useEffect(() => {
@@ -264,8 +266,8 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
       
       const peerConnection = new RTCPeerConnection({
         iceServers,
-        // Increased pool size for faster connection establishment
-        iceCandidatePoolSize: 20,
+        // Maximum pool size for aggressive NAT traversal
+        iceCandidatePoolSize: 255,
         // Try all connection types (direct P2P and relay through TURN)
         iceTransportPolicy: 'all',
         // Bundle all media on single connection for better NAT traversal
@@ -274,6 +276,82 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         rtcpMuxPolicy: 'require',
       });
       peerConnectionRef.current = peerConnection;
+
+      // Create data channel for keepalive heartbeat
+      // This prevents connection from being closed during inactivity
+      const dataChannel = peerConnection.createDataChannel('keepalive', {
+        ordered: false,
+        maxRetransmits: 0,
+      });
+      dataChannelRef.current = dataChannel;
+
+      dataChannel.onopen = () => {
+        console.log('💓 Keepalive data channel opened');
+        
+        // Send heartbeat every 10 seconds to keep connection alive
+        const heartbeatInterval = setInterval(() => {
+          if (dataChannel.readyState === 'open') {
+            try {
+              dataChannel.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
+              console.log('💓 Heartbeat sent');
+            } catch (error) {
+              console.warn('⚠️ Failed to send heartbeat:', error);
+            }
+          }
+        }, 10000);
+
+        // Store interval reference for cleanup
+        if (heartbeatIntervalRef.current) {
+          clearInterval(heartbeatIntervalRef.current);
+        }
+        heartbeatIntervalRef.current = heartbeatInterval;
+      };
+
+      dataChannel.onclose = () => {
+        console.log('💔 Keepalive data channel closed');
+        if (heartbeatIntervalRef.current) {
+          clearInterval(heartbeatIntervalRef.current);
+          heartbeatIntervalRef.current = null;
+        }
+      };
+
+      dataChannel.onerror = (error) => {
+        console.error('❌ Data channel error:', error);
+      };
+
+      dataChannel.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'heartbeat') {
+            console.log('💓 Heartbeat received from peer');
+          }
+        } catch (error) {
+          console.warn('⚠️ Failed to parse data channel message:', error);
+        }
+      };
+
+      // Handle incoming data channel from peer
+      peerConnection.ondatachannel = (event) => {
+        const receivedChannel = event.channel;
+        console.log('📨 Received data channel from peer:', receivedChannel.label);
+        
+        if (receivedChannel.label === 'keepalive') {
+          receivedChannel.onmessage = (event) => {
+            try {
+              const data = JSON.parse(event.data);
+              if (data.type === 'heartbeat') {
+                console.log('💓 Heartbeat received from peer');
+                // Respond with our own heartbeat
+                if (receivedChannel.readyState === 'open') {
+                  receivedChannel.send(JSON.stringify({ type: 'heartbeat', timestamp: Date.now() }));
+                }
+              }
+            } catch (error) {
+              console.warn('⚠️ Failed to parse data channel message:', error);
+            }
+          };
+        }
+      };
 
       // Add local tracks
       localStreamRef.current?.getTracks().forEach(track => {
@@ -759,7 +837,10 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
                     localIceCandidates = [];
                     iceGatheringComplete = false;
                     
-                    const answer = await peerConnection.createAnswer();
+                    const answer = await peerConnection.createAnswer({
+                      offerToReceiveAudio: true,
+                      offerToReceiveVideo: true,
+                    });
                     await peerConnection.setLocalDescription(answer);
                     console.log('✅ Answer created from buffered offer');
                     
@@ -888,9 +969,12 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             localIceCandidates = [];
             iceGatheringComplete = false;
             
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            console.log('✅ Answer created');
+          const answer = await peerConnection.createAnswer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true,
+          });
+          await peerConnection.setLocalDescription(answer);
+          console.log('✅ Answer created');
             
             // Wait for ICE gathering
             console.log('⏳ Waiting for ICE gathering...');
@@ -998,6 +1082,27 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             await channel.track({ online_at: new Date().toISOString() });
             console.log('✅ Presence tracked');
             setConnectionStatus('waiting_for_participant');
+
+            // Setup Supabase Realtime keepalive heartbeat
+            // Send presence update every 20 seconds to prevent channel timeout
+            const channelHeartbeat = setInterval(async () => {
+              if (channelRef.current) {
+                try {
+                  await channelRef.current.track({ 
+                    online_at: new Date().toISOString(),
+                    heartbeat: true 
+                  });
+                  console.log('💓 Channel heartbeat sent');
+                } catch (error) {
+                  console.warn('⚠️ Failed to send channel heartbeat:', error);
+                }
+              }
+            }, 20000);
+
+            // Store heartbeat interval for cleanup
+            return () => {
+              clearInterval(channelHeartbeat);
+            };
           } else if (status === 'CHANNEL_ERROR') {
             console.error('❌ Channel error');
             setConnectionStatus('failed');
@@ -1021,6 +1126,15 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         console.log('🧹 Cleanup');
         if (callTimerRef.current) {
           clearInterval(callTimerRef.current);
+          callTimerRef.current = null;
+        }
+        if (heartbeatIntervalRef.current) {
+          clearInterval(heartbeatIntervalRef.current);
+          heartbeatIntervalRef.current = null;
+        }
+        if (dataChannelRef.current) {
+          dataChannelRef.current.close();
+          dataChannelRef.current = null;
         }
         if (peerConnectionRef.current) {
           peerConnectionRef.current.close();
