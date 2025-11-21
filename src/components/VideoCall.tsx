@@ -63,6 +63,10 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
   const statsMonitorRef = useRef<NodeJS.Timeout | null>(null);
   const wasConnectedRef = useRef(false); // Track if connection was ever established
   const isCleanupRef = useRef(false); // Track if we're doing intentional cleanup
+  const clientIdRef = useRef<string>(`client-${Math.random().toString(36).substring(7)}`);
+  const remotePeerIdRef = useRef<string | null>(null);
+  const leaveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastHeartbeatRef = useRef<number>(Date.now());
 
   // Initialize media stream
   useEffect(() => {
@@ -218,7 +222,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
     }
 
     const setupWebRTC = async () => {
-      const clientId = Math.random().toString(36).substring(7);
+      const clientId = clientIdRef.current;
       console.log('🚀 Client ID:', clientId, 'Room:', roomId);
       
       // ⚠️ ВАЖНО: Бесплатные публичные TURN серверы НЕ ПОДХОДЯТ для продакшн использования!
@@ -852,11 +856,23 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             }
           }
         })
-        .on('presence', { event: 'join' }, ({ key }) => {
-          console.log('👋 Participant joined:', key);
+        .on('presence', { event: 'join' }, ({ key, newPresences }) => {
+          console.log('👋 Participant joined:', key, newPresences);
           console.log('🔍 DEBUG: Join event - clientId:', clientId, 'key:', key, 'isOrganizer:', isOrganizerRef.current);
           
+          // Track remote peer ID
           if (key !== clientId) {
+            remotePeerIdRef.current = key;
+            lastHeartbeatRef.current = Date.now();
+            console.log('👤 Remote peer ID set:', key);
+            
+            // Clear any pending leave timeout
+            if (leaveTimeoutRef.current) {
+              clearTimeout(leaveTimeoutRef.current);
+              leaveTimeoutRef.current = null;
+              console.log('✅ Cancelled leave timeout - peer rejoined');
+            }
+            
             setUserDisconnected(false);
             setIsRemoteConnected(false);
             setConnectionStatus('waiting_for_participant');
@@ -871,24 +887,44 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         })
         .on('presence', { event: 'leave' }, ({ key }) => {
           console.log('👋 Participant left signaling channel:', key);
-          console.log('🔍 DEBUG: Leave event - clientId:', clientId, 'key:', key);
+          console.log('🔍 DEBUG: Leave event - clientId:', clientId, 'key:', key, 'remotePeerId:', remotePeerIdRef.current);
           console.log('🔍 DEBUG: wasConnectedRef.current =', wasConnectedRef.current);
           console.log('🔍 DEBUG: isCleanupRef.current =', isCleanupRef.current);
           
-          if (key !== clientId && !isCleanupRef.current) {
-            // Only show "user left" message if connection was actually established
-            if (wasConnectedRef.current) {
-              console.log('✅ Participant left - connection WAS established, showing disconnect message');
-              setUserDisconnected(true);
-              toast({
-                title: "Пользователь покинул встречу",
-                description: "Собеседник отключился",
-              });
-            } else {
-              console.log('⚠️ Participant left - connection was NEVER established, this is likely a network issue');
-              // Don't show "user left" message if connection was never established
-              // The ICE/connection state handlers will show appropriate error messages
+          // Only process if:
+          // 1. It's the remote peer leaving (not us)
+          // 2. Connection was established
+          // 3. Not during our own cleanup
+          if (key === remotePeerIdRef.current && wasConnectedRef.current && !isCleanupRef.current) {
+            console.log('⚠️ Remote peer left presence - checking if real disconnect...');
+            
+            // Clear any existing timeout
+            if (leaveTimeoutRef.current) {
+              clearTimeout(leaveTimeoutRef.current);
             }
+            
+            // Wait 5 seconds to see if it's just a temporary disconnect
+            leaveTimeoutRef.current = setTimeout(() => {
+              const timeSinceLastHeartbeat = Date.now() - lastHeartbeatRef.current;
+              console.log('⏱️ Time since last heartbeat:', timeSinceLastHeartbeat, 'ms');
+              
+              // Only show "user left" if no heartbeat received for 5 seconds
+              if (timeSinceLastHeartbeat > 5000) {
+                console.log('✅ Confirmed: Participant left (no heartbeat for 5s)');
+                setUserDisconnected(true);
+                toast({
+                  title: "Собеседник покинул встречу",
+                  description: "Видеозвонок завершен",
+                  variant: "destructive",
+                });
+              } else {
+                console.log('✅ Recent heartbeat detected, likely temporary disconnect');
+              }
+              
+              leaveTimeoutRef.current = null;
+            }, 5000);
+          } else if (key !== clientId && !wasConnectedRef.current) {
+            console.log('⚠️ Participant left before connection established - network issue');
           }
         })
         .on('broadcast', { event: 'join_approved' }, async ({ payload }) => {
@@ -1179,7 +1215,15 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         .on('broadcast', { event: 'channel_heartbeat' }, ({ payload }) => {
           // Receive heartbeat from peer to confirm channel is alive
           if (payload.from !== clientId) {
-            console.log('💓 Received channel heartbeat from peer');
+            lastHeartbeatRef.current = Date.now();
+            console.log('💓 Received channel heartbeat from peer - updated timestamp');
+            
+            // Clear any pending leave timeout since peer is still alive
+            if (leaveTimeoutRef.current) {
+              clearTimeout(leaveTimeoutRef.current);
+              leaveTimeoutRef.current = null;
+              console.log('✅ Cancelled leave timeout - heartbeat received');
+            }
           }
         })
         .subscribe(async (status) => {
@@ -1204,7 +1248,8 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
                   // Send both presence update AND a broadcast heartbeat
                   await channelRef.current.track({ 
                     online_at: new Date().toISOString(),
-                    heartbeat: Date.now()
+                    heartbeat: Date.now(),
+                    client_id: clientId
                   });
                   
                   // Also send a broadcast heartbeat as fallback
@@ -1224,7 +1269,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
               } else {
                 console.warn('⚠️ Channel ref is null, cannot send heartbeat');
               }
-            }, 15000); // Every 15 seconds
+            }, 10000); // Every 10 seconds (increased frequency)
             
             console.log('💓 Channel heartbeat mechanism started');
           } else if (status === 'CHANNEL_ERROR') {
@@ -1253,6 +1298,10 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         isCleanupRef.current = true;
         
         // Clear all timers
+        if (leaveTimeoutRef.current) {
+          clearTimeout(leaveTimeoutRef.current);
+          leaveTimeoutRef.current = null;
+        }
         if (callTimerRef.current) {
           clearInterval(callTimerRef.current);
           callTimerRef.current = null;
