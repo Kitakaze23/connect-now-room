@@ -215,6 +215,20 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
       const clientId = Math.random().toString(36).substring(7);
       console.log('🚀 Client ID:', clientId, 'Room:', roomId);
       
+      // ⚠️ ВАЖНО: Бесплатные публичные TURN серверы НЕ ПОДХОДЯТ для продакшн использования!
+      // Они часто перегружены, блокируют регионы, имеют низкую скорость и ненадежны.
+      // 
+      // Для продакшн окружения ОБЯЗАТЕЛЬНО используйте один из вариантов:
+      // 1. Платный TURN-сервис: Metered.ca, Xirsys, Twilio TURN, или VideoSDK
+      // 2. Свой coturn сервер на VPS (инструкции в README.md)
+      //
+      // Пример конфигурации для платного TURN сервиса:
+      // {
+      //   urls: ['turn:your-turn-server.com:3478', 'turn:your-turn-server.com:3478?transport=tcp'],
+      //   username: 'your-username',
+      //   credential: 'your-password'
+      // }
+      
       const peerConnection = new RTCPeerConnection({
         iceServers: [
           // Multiple STUN servers for better NAT traversal
@@ -224,7 +238,11 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           { urls: "stun:stun3.l.google.com:19302" },
           { urls: "stun:stun4.l.google.com:19302" },
           
-          // Primary TURN servers (Metered)
+          // ⚠️ ВНИМАНИЕ: Следующие TURN серверы - БЕСПЛАТНЫЕ и НЕНАДЕЖНЫЕ
+          // Используются только для тестирования!
+          // Для продакшн обязательно замените на платный сервис (см. комментарии выше)
+          
+          // Primary TURN servers (Metered - FREE, unreliable)
           {
             urls: "turn:openrelay.metered.ca:80",
             username: "openrelayproject",
@@ -241,7 +259,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             credential: "openrelayproject",
           },
           
-          // Backup TURN servers (Numb)
+          // Backup TURN servers (Numb - FREE, unreliable)
           {
             urls: "turn:numb.viagenie.ca",
             username: "webrtc@live.com",
@@ -253,7 +271,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             credential: "muazkh",
           },
           
-          // Additional backup TURN servers
+          // Additional backup TURN servers (Metered - FREE, unreliable)
           {
             urls: "turn:relay.metered.ca:80",
             username: "85d76e46be6d5e65d6e85ba1",
@@ -328,15 +346,33 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         if (state === 'connected') {
           setConnectionStatus('connected');
           retryCountRef.current = 0;
+          console.log('✅ Connection established successfully');
+          
+          // Log connection type for diagnostics
+          peerConnection.getStats(null).then(stats => {
+            stats.forEach(report => {
+              if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                console.log('📊 Connection type:', report.localCandidate?.candidateType, '→', report.remoteCandidateType);
+                console.log('📊 Transport:', report.localCandidate?.protocol);
+              }
+            });
+          });
         } else if (state === 'connecting') {
           setConnectionStatus('connecting');
         } else if (state === 'disconnected') {
           setConnectionStatus('disconnected');
           setIsRemoteConnected(false);
+          console.warn('⚠️ Connection disconnected - attempting recovery');
+          
           // Attempt reconnection only if not already at max retries
           if (retryCountRef.current < maxRetries && isOrganizerRef.current) {
             retryCountRef.current++;
             console.log(`🔄 Attempting reconnection (${retryCountRef.current}/${maxRetries})`);
+            
+            toast({
+              title: "Соединение прервано",
+              description: `Попытка восстановления ${retryCountRef.current}/${maxRetries}...`,
+            });
             
             setTimeout(() => {
               if (peerConnection.signalingState !== 'closed') {
@@ -344,14 +380,26 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
                 createOffer();
               }
             }, 2000 * retryCountRef.current);
+          } else if (retryCountRef.current >= maxRetries) {
+            toast({
+              title: "Не удалось восстановить соединение",
+              description: "Проверьте подключение к интернету и перезагрузите страницу",
+              variant: "destructive",
+            });
           }
         } else if (state === 'failed') {
           setConnectionStatus('failed');
           setIsRemoteConnected(false);
+          console.error('❌ Connection failed - network issues detected');
           
           if (retryCountRef.current < maxRetries && isOrganizerRef.current) {
             retryCountRef.current++;
-            console.log(`🔄 Connection failed, attempting recovery (${retryCountRef.current}/${maxRetries})`);
+            console.log(`🔄 Connection failed, attempting ICE restart (${retryCountRef.current}/${maxRetries})`);
+            
+            toast({
+              title: "Проблемы с сетью",
+              description: `Попытка ICE restart ${retryCountRef.current}/${maxRetries}...`,
+            });
             
             setTimeout(() => {
               if (peerConnection.signalingState !== 'closed') {
@@ -361,10 +409,12 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
               }
             }, 1000);
           } else {
+            console.error('❌ All connection attempts exhausted');
             toast({
-              title: "Ошибка подключения",
-              description: "Не удалось установить соединение. Попробуйте перезагрузить страницу.",
+              title: "Не удалось установить соединение",
+              description: "Возможные причины: VPN, корпоративная сеть, строгий NAT/firewall, мобильный интернет с CGNAT. Попробуйте отключить VPN или подключиться к другой сети.",
               variant: "destructive",
+              duration: 10000,
             });
           }
         } else if (state === 'closed') {
@@ -384,18 +434,78 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         
         if (iceState === 'checking') {
           setConnectionStatus('connecting');
+          console.log('🔍 ICE checking - gathering candidates and testing connectivity');
         } else if (iceState === 'connected' || iceState === 'completed') {
           setConnectionStatus('connected');
           retryCountRef.current = 0;
           console.log('✅ ICE connection established successfully');
+          
+          // Log detailed ICE candidate information for diagnostics
+          peerConnection.getStats(null).then(stats => {
+            let relayUsed = false;
+            let srflxUsed = false;
+            let hostUsed = false;
+            
+            stats.forEach(report => {
+              if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                const localType = report.localCandidate?.candidateType;
+                const remoteType = report.remoteCandidateType;
+                
+                console.log('📊 Active candidate pair:', {
+                  local: localType,
+                  remote: remoteType,
+                  protocol: report.localCandidate?.protocol,
+                  priority: report.priority
+                });
+                
+                if (localType === 'relay' || remoteType === 'relay') relayUsed = true;
+                if (localType === 'srflx' || remoteType === 'srflx') srflxUsed = true;
+                if (localType === 'host' || remoteType === 'host') hostUsed = true;
+              }
+            });
+            
+            if (relayUsed) {
+              console.log('🔄 TURN relay is being used (VPN/NAT detected)');
+            } else if (srflxUsed) {
+              console.log('🌐 STUN server reflexive candidate used (behind NAT)');
+            } else if (hostUsed) {
+              console.log('🏠 Direct P2P connection (same network)');
+            }
+          });
         } else if (iceState === 'failed') {
-          console.log('❌ ICE connection failed');
+          console.error('❌ ICE connection failed - all connectivity checks failed');
           setConnectionStatus('failed');
           setIsRemoteConnected(false);
+          
+          // Log all gathered candidates for troubleshooting
+          peerConnection.getStats(null).then(stats => {
+            const candidates: any[] = [];
+            stats.forEach(report => {
+              if (report.type === 'local-candidate') {
+                candidates.push({
+                  type: report.candidateType,
+                  protocol: report.protocol,
+                  address: report.address,
+                  port: report.port
+                });
+              }
+            });
+            console.error('📋 Gathered local candidates:', candidates);
+            
+            const hasRelay = candidates.some(c => c.type === 'relay');
+            if (!hasRelay) {
+              console.error('⚠️ NO RELAY CANDIDATES! TURN servers may be unreachable or invalid.');
+            }
+          });
           
           if (retryCountRef.current < maxRetries && isOrganizerRef.current) {
             retryCountRef.current++;
             console.log(`🔄 ICE failed, attempting restart (${retryCountRef.current}/${maxRetries})`);
+            
+            toast({
+              title: "Проблемы с ICE",
+              description: `Попытка перезапуска ${retryCountRef.current}/${maxRetries}...`,
+            });
             
             setTimeout(() => {
               if (peerConnection.signalingState !== 'closed') {
@@ -403,9 +513,17 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
                 createOffer();
               }
             }, 1000);
+          } else {
+            console.error('❌ All ICE restart attempts failed');
+            toast({
+              title: "ICE соединение не удалось",
+              description: "Не удалось установить прямое или relay соединение. Убедитесь, что TURN серверы настроены правильно (см. README.md).",
+              variant: "destructive",
+              duration: 10000,
+            });
           }
         } else if (iceState === 'disconnected') {
-          console.log('⚠️ ICE disconnected');
+          console.warn('⚠️ ICE disconnected - connection may recover');
           setIsRemoteConnected(false);
           setConnectionStatus('disconnected');
         } else if (iceState === 'closed') {
@@ -498,8 +616,27 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
       // ICE candidate handler - collect and send candidates
       peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
-          console.log('📦 ICE candidate gathered:', event.candidate.type);
-          localIceCandidates.push(event.candidate);
+          const candidate = event.candidate;
+          console.log('📦 ICE candidate gathered:', {
+            type: candidate.type,
+            protocol: candidate.protocol,
+            address: candidate.address,
+            port: candidate.port,
+            priority: candidate.priority,
+            relatedAddress: candidate.relatedAddress,
+            relatedPort: candidate.relatedPort
+          });
+          
+          // Check if this is a TURN relay candidate
+          if (candidate.type === 'relay') {
+            console.log('✅ TURN relay candidate gathered - good for NAT/VPN scenarios');
+          } else if (candidate.type === 'srflx') {
+            console.log('🌐 Server reflexive candidate (STUN) - indicates NAT');
+          } else if (candidate.type === 'host') {
+            console.log('🏠 Host candidate - direct connection possible');
+          }
+          
+          localIceCandidates.push(candidate);
           
           // Send additional candidates after offer/answer is sent
           if (offerSent || answerSent) {
@@ -508,13 +645,29 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
               type: 'broadcast',
               event: 'ice_candidate',
               payload: {
-                candidate: event.candidate.toJSON(),
+                candidate: candidate.toJSON(),
                 from: clientId
               }
             });
           }
         } else {
           console.log('✅ ICE gathering complete');
+          console.log(`📊 Total candidates gathered: ${localIceCandidates.length}`);
+          
+          // Analyze gathered candidates
+          const candidateTypes = {
+            host: localIceCandidates.filter(c => c.type === 'host').length,
+            srflx: localIceCandidates.filter(c => c.type === 'srflx').length,
+            relay: localIceCandidates.filter(c => c.type === 'relay').length,
+          };
+          console.log('📊 Candidate breakdown:', candidateTypes);
+          
+          if (candidateTypes.relay === 0) {
+            console.warn('⚠️ NO RELAY CANDIDATES GATHERED!');
+            console.warn('⚠️ This means TURN servers are not working.');
+            console.warn('⚠️ Connections through VPN/strict NAT will likely FAIL!');
+          }
+          
           iceGatheringComplete = true;
         }
       };
