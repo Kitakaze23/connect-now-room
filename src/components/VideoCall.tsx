@@ -59,6 +59,8 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
   const warningShownRef = useRef(false);
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
+  const channelHeartbeatRef = useRef<NodeJS.Timeout | null>(null);
+  const statsMonitorRef = useRef<NodeJS.Timeout | null>(null);
 
   // Initialize media stream
   useEffect(() => {
@@ -416,6 +418,39 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
               }
             });
           });
+
+          // Start periodic connection quality monitoring
+          if (statsMonitorRef.current) {
+            clearInterval(statsMonitorRef.current);
+          }
+          statsMonitorRef.current = setInterval(async () => {
+            if (peerConnection.connectionState === 'connected') {
+              try {
+                const stats = await peerConnection.getStats(null);
+                let bytesReceived = 0;
+                let bytesSent = 0;
+                
+                stats.forEach(report => {
+                  if (report.type === 'inbound-rtp' && report.kind === 'video') {
+                    bytesReceived = report.bytesReceived || 0;
+                  }
+                  if (report.type === 'outbound-rtp' && report.kind === 'video') {
+                    bytesSent = report.bytesSent || 0;
+                  }
+                });
+                
+                console.log('📊 Connection health check - bytes received:', bytesReceived, 'sent:', bytesSent);
+              } catch (error) {
+                console.warn('⚠️ Failed to get connection stats:', error);
+              }
+            } else {
+              console.warn('⚠️ Connection state is not connected:', peerConnection.connectionState);
+              if (statsMonitorRef.current) {
+                clearInterval(statsMonitorRef.current);
+                statsMonitorRef.current = null;
+              }
+            }
+          }, 15000); // Check every 15 seconds
         } else if (state === 'connecting') {
           setConnectionStatus('connecting');
         } else if (state === 'disconnected') {
@@ -423,10 +458,17 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           setIsRemoteConnected(false);
           console.warn('⚠️ Connection disconnected - attempting recovery');
           
-          // Attempt reconnection only if not already at max retries
-          if (retryCountRef.current < maxRetries && isOrganizerRef.current) {
+          // Clear stats monitor
+          if (statsMonitorRef.current) {
+            clearInterval(statsMonitorRef.current);
+            statsMonitorRef.current = null;
+          }
+          
+          // Attempt reconnection with exponential backoff
+          if (retryCountRef.current < maxRetries) {
             retryCountRef.current++;
-            console.log(`🔄 Attempting reconnection (${retryCountRef.current}/${maxRetries})`);
+            const backoffDelay = 1000 * Math.pow(1.5, retryCountRef.current - 1);
+            console.log(`🔄 Attempting reconnection (${retryCountRef.current}/${maxRetries}) after ${backoffDelay}ms`);
             
             toast({
               title: "Соединение прервано",
@@ -434,12 +476,16 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             });
             
             setTimeout(() => {
-              if (peerConnection.signalingState !== 'closed') {
-                console.log('🔄 Creating new offer for reconnection');
-                createOffer();
+              if (peerConnection.connectionState === 'disconnected' && peerConnection.signalingState !== 'closed') {
+                console.log('🔄 Attempting ICE restart');
+                peerConnection.restartIce();
+                if (isOrganizerRef.current) {
+                  createOffer();
+                }
               }
-            }, 2000 * retryCountRef.current);
+            }, backoffDelay);
           } else if (retryCountRef.current >= maxRetries) {
+            console.error('❌ Max reconnection attempts reached');
             toast({
               title: "Не удалось восстановить соединение",
               description: "Проверьте подключение к интернету и перезагрузите страницу",
@@ -451,9 +497,16 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           setIsRemoteConnected(false);
           console.error('❌ Connection failed - network issues detected');
           
-          if (retryCountRef.current < maxRetries && isOrganizerRef.current) {
+          // Clear stats monitor
+          if (statsMonitorRef.current) {
+            clearInterval(statsMonitorRef.current);
+            statsMonitorRef.current = null;
+          }
+          
+          if (retryCountRef.current < maxRetries) {
             retryCountRef.current++;
-            console.log(`🔄 Connection failed, attempting ICE restart (${retryCountRef.current}/${maxRetries})`);
+            const backoffDelay = 2000 * retryCountRef.current;
+            console.log(`🔄 Connection failed, attempting ICE restart (${retryCountRef.current}/${maxRetries}) after ${backoffDelay}ms`);
             
             toast({
               title: "Проблемы с сетью",
@@ -464,9 +517,11 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
               if (peerConnection.signalingState !== 'closed') {
                 console.log('🔄 Restarting ICE and creating new offer');
                 peerConnection.restartIce();
-                createOffer();
+                if (isOrganizerRef.current) {
+                  createOffer();
+                }
               }
-            }, 1000);
+            }, backoffDelay);
           } else {
             console.error('❌ All connection attempts exhausted');
             toast({
@@ -480,6 +535,12 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           console.log('🔌 Connection closed');
           setConnectionStatus('disconnected');
           setIsRemoteConnected(false);
+          
+          // Clear stats monitor
+          if (statsMonitorRef.current) {
+            clearInterval(statsMonitorRef.current);
+            statsMonitorRef.current = null;
+          }
         }
         
         if (state) {
@@ -1074,6 +1135,12 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             console.error('❌ Error adding ICE candidate:', error);
           }
         })
+        .on('broadcast', { event: 'channel_heartbeat' }, ({ payload }) => {
+          // Receive heartbeat from peer to confirm channel is alive
+          if (payload.from !== clientId) {
+            console.log('💓 Received channel heartbeat from peer');
+          }
+        })
         .subscribe(async (status) => {
           console.log('📡 Subscription status:', status);
           if (status === 'SUBSCRIBED') {
@@ -1084,25 +1151,41 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             setConnectionStatus('waiting_for_participant');
 
             // Setup Supabase Realtime keepalive heartbeat
-            // Send presence update every 20 seconds to prevent channel timeout
-            const channelHeartbeat = setInterval(async () => {
+            // Send presence update every 15 seconds to prevent channel timeout
+            // This is critical for maintaining Supabase Realtime connection
+            if (channelHeartbeatRef.current) {
+              clearInterval(channelHeartbeatRef.current);
+            }
+            
+            channelHeartbeatRef.current = setInterval(async () => {
               if (channelRef.current) {
                 try {
+                  // Send both presence update AND a broadcast heartbeat
                   await channelRef.current.track({ 
                     online_at: new Date().toISOString(),
-                    heartbeat: true 
+                    heartbeat: Date.now()
                   });
-                  console.log('💓 Channel heartbeat sent');
+                  
+                  // Also send a broadcast heartbeat as fallback
+                  await channelRef.current.send({
+                    type: 'broadcast',
+                    event: 'channel_heartbeat',
+                    payload: { from: clientId, timestamp: Date.now() }
+                  });
+                  
+                  console.log('💓 Channel heartbeat sent (presence + broadcast)');
                 } catch (error) {
                   console.warn('⚠️ Failed to send channel heartbeat:', error);
+                  
+                  // If heartbeat fails multiple times, try to reconnect channel
+                  console.log('🔄 Channel may be stale, consider reconnecting...');
                 }
+              } else {
+                console.warn('⚠️ Channel ref is null, cannot send heartbeat');
               }
-            }, 20000);
-
-            // Store heartbeat interval for cleanup
-            return () => {
-              clearInterval(channelHeartbeat);
-            };
+            }, 15000); // Every 15 seconds
+            
+            console.log('💓 Channel heartbeat mechanism started');
           } else if (status === 'CHANNEL_ERROR') {
             console.error('❌ Channel error');
             setConnectionStatus('failed');
@@ -1123,7 +1206,9 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         });
 
       return () => {
-        console.log('🧹 Cleanup');
+        console.log('🧹 Cleanup - stopping all intervals and connections');
+        
+        // Clear all timers
         if (callTimerRef.current) {
           clearInterval(callTimerRef.current);
           callTimerRef.current = null;
@@ -1132,22 +1217,58 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           clearInterval(heartbeatIntervalRef.current);
           heartbeatIntervalRef.current = null;
         }
+        if (channelHeartbeatRef.current) {
+          clearInterval(channelHeartbeatRef.current);
+          channelHeartbeatRef.current = null;
+        }
+        if (statsMonitorRef.current) {
+          clearInterval(statsMonitorRef.current);
+          statsMonitorRef.current = null;
+        }
+        
+        // Close data channel
         if (dataChannelRef.current) {
-          dataChannelRef.current.close();
+          try {
+            dataChannelRef.current.close();
+          } catch (error) {
+            console.warn('⚠️ Error closing data channel:', error);
+          }
           dataChannelRef.current = null;
         }
+        
+        // Close peer connection
         if (peerConnectionRef.current) {
-          peerConnectionRef.current.close();
+          try {
+            peerConnectionRef.current.close();
+          } catch (error) {
+            console.warn('⚠️ Error closing peer connection:', error);
+          }
           peerConnectionRef.current = null;
         }
+        
+        // Unsubscribe from channel
         if (channelRef.current) {
-          channelRef.current.unsubscribe();
+          try {
+            channelRef.current.unsubscribe();
+          } catch (error) {
+            console.warn('⚠️ Error unsubscribing from channel:', error);
+          }
           channelRef.current = null;
         }
+        
+        // Stop local media tracks
         if (localStreamRef.current) {
-          localStreamRef.current.getTracks().forEach(track => track.stop());
+          localStreamRef.current.getTracks().forEach(track => {
+            try {
+              track.stop();
+            } catch (error) {
+              console.warn('⚠️ Error stopping track:', error);
+            }
+          });
           localStreamRef.current = null;
         }
+        
+        console.log('✅ Cleanup complete');
       };
     };
 
