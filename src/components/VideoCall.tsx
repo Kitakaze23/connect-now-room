@@ -61,6 +61,8 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const channelHeartbeatRef = useRef<NodeJS.Timeout | null>(null);
   const statsMonitorRef = useRef<NodeJS.Timeout | null>(null);
+  const wasConnectedRef = useRef(false); // Track if connection was ever established
+  const isCleanupRef = useRef(false); // Track if we're doing intentional cleanup
 
   // Initialize media stream
   useEffect(() => {
@@ -407,7 +409,8 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         if (state === 'connected') {
           setConnectionStatus('connected');
           retryCountRef.current = 0;
-          console.log('✅ Connection established successfully');
+          wasConnectedRef.current = true; // Mark that connection was established
+          console.log('✅ Connection established successfully - marking as connected');
           
           // Log connection type for diagnostics
           peerConnection.getStats(null).then(stats => {
@@ -496,6 +499,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           setConnectionStatus('failed');
           setIsRemoteConnected(false);
           console.error('❌ Connection failed - network issues detected');
+          console.log('🔍 DEBUG: wasConnectedRef.current =', wasConnectedRef.current);
           
           // Clear stats monitor
           if (statsMonitorRef.current) {
@@ -524,12 +528,24 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             }, backoffDelay);
           } else {
             console.error('❌ All connection attempts exhausted');
-            toast({
-              title: "Не удалось установить соединение",
-              description: "Возможные причины: VPN, корпоративная сеть, строгий NAT/firewall, мобильный интернет с CGNAT. Попробуйте отключить VPN или подключиться к другой сети.",
-              variant: "destructive",
-              duration: 10000,
-            });
+            console.log('🔍 DEBUG: Connection was', wasConnectedRef.current ? 'ESTABLISHED before' : 'NEVER established');
+            
+            // Show different message based on whether connection was ever established
+            if (wasConnectedRef.current) {
+              toast({
+                title: "Соединение потеряно",
+                description: "Не удалось восстановить соединение. Проверьте интернет-подключение.",
+                variant: "destructive",
+                duration: 10000,
+              });
+            } else {
+              toast({
+                title: "Не удалось установить соединение",
+                description: "Возможные причины: VPN, корпоративная сеть, строгий NAT/firewall, мобильный интернет с CGNAT. Попробуйте отключить VPN или подключиться к другой сети.",
+                variant: "destructive",
+                duration: 10000,
+              });
+            }
           }
         } else if (state === 'closed') {
           console.log('🔌 Connection closed');
@@ -594,6 +610,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           });
         } else if (iceState === 'failed') {
           console.error('❌ ICE connection failed - all connectivity checks failed');
+          console.log('🔍 DEBUG: wasConnectedRef.current =', wasConnectedRef.current);
           setConnectionStatus('failed');
           setIsRemoteConnected(false);
           
@@ -635,12 +652,24 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
             }, 1000);
           } else {
             console.error('❌ All ICE restart attempts failed');
-            toast({
-              title: "ICE соединение не удалось",
-              description: "Не удалось установить прямое или relay соединение. Убедитесь, что TURN серверы настроены правильно (см. README.md).",
-              variant: "destructive",
-              duration: 10000,
-            });
+            console.log('🔍 DEBUG: Connection was', wasConnectedRef.current ? 'ESTABLISHED before' : 'NEVER established');
+            
+            // Show different message based on whether connection was ever established
+            if (wasConnectedRef.current) {
+              toast({
+                title: "Соединение потеряно",
+                description: "Не удалось восстановить соединение после обрыва связи.",
+                variant: "destructive",
+                duration: 10000,
+              });
+            } else {
+              toast({
+                title: "Невозможно соединиться",
+                description: "Не удалось установить соединение. Возможные причины: один из участников за VPN/NAT, не настроены TURN серверы, проблемы с сетью. См. README.md для настройки.",
+                variant: "destructive",
+                duration: 10000,
+              });
+            }
           }
         } else if (iceState === 'disconnected') {
           console.warn('⚠️ ICE disconnected - connection may recover');
@@ -825,6 +854,7 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
         })
         .on('presence', { event: 'join' }, ({ key }) => {
           console.log('👋 Participant joined:', key);
+          console.log('🔍 DEBUG: Join event - clientId:', clientId, 'key:', key, 'isOrganizer:', isOrganizerRef.current);
           
           if (key !== clientId) {
             setUserDisconnected(false);
@@ -840,14 +870,25 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
           }
         })
         .on('presence', { event: 'leave' }, ({ key }) => {
-          console.log('👋 Participant left:', key);
+          console.log('👋 Participant left signaling channel:', key);
+          console.log('🔍 DEBUG: Leave event - clientId:', clientId, 'key:', key);
+          console.log('🔍 DEBUG: wasConnectedRef.current =', wasConnectedRef.current);
+          console.log('🔍 DEBUG: isCleanupRef.current =', isCleanupRef.current);
           
-          if (key !== clientId) {
-            setUserDisconnected(true);
-            toast({
-              title: "Пользователь покинул встречу",
-              description: "Собеседник отключился",
-            });
+          if (key !== clientId && !isCleanupRef.current) {
+            // Only show "user left" message if connection was actually established
+            if (wasConnectedRef.current) {
+              console.log('✅ Participant left - connection WAS established, showing disconnect message');
+              setUserDisconnected(true);
+              toast({
+                title: "Пользователь покинул встречу",
+                description: "Собеседник отключился",
+              });
+            } else {
+              console.log('⚠️ Participant left - connection was NEVER established, this is likely a network issue');
+              // Don't show "user left" message if connection was never established
+              // The ICE/connection state handlers will show appropriate error messages
+            }
           }
         })
         .on('broadcast', { event: 'join_approved' }, async ({ payload }) => {
@@ -1207,6 +1248,9 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
 
       return () => {
         console.log('🧹 Cleanup - stopping all intervals and connections');
+        
+        // Mark that we're doing intentional cleanup
+        isCleanupRef.current = true;
         
         // Clear all timers
         if (callTimerRef.current) {
