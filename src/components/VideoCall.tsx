@@ -217,72 +217,53 @@ const VideoCall = ({ roomId, isCameraOn, isMicOn, onConnectionChange, onConnecti
       
       // ⚠️ ВАЖНО: Бесплатные публичные TURN серверы НЕ ПОДХОДЯТ для продакшн использования!
       // Они часто перегружены, блокируют регионы, имеют низкую скорость и ненадежны.
-      // 
-      // Для продакшн окружения ОБЯЗАТЕЛЬНО используйте один из вариантов:
-      // 1. Платный TURN-сервис: Metered.ca, Xirsys, Twilio TURN, или VideoSDK
-      // 2. Свой coturn сервер на VPS (инструкции в README.md)
-      //
-      // Пример конфигурации для платного TURN сервиса:
-      // {
-      //   urls: ['turn:your-turn-server.com:3478', 'turn:your-turn-server.com:3478?transport=tcp'],
-      //   username: 'your-username',
-      //   credential: 'your-password'
-      // }
+      // Build ICE servers configuration from environment variables
+      const iceServers: RTCIceServer[] = [
+        // Multiple STUN servers for better NAT traversal
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+        { urls: "stun:stun3.l.google.com:19302" },
+        { urls: "stun:stun4.l.google.com:19302" },
+      ];
+
+      // Add TURN servers from environment variables
+      // Configure your TURN server credentials in .env file:
+      // VITE_TURN_SERVER_URL, VITE_TURN_SERVER_USERNAME, VITE_TURN_SERVER_CREDENTIAL
+      const turnServerUrl = import.meta.env.VITE_TURN_SERVER_URL;
+      const turnUsername = import.meta.env.VITE_TURN_SERVER_USERNAME;
+      const turnCredential = import.meta.env.VITE_TURN_SERVER_CREDENTIAL;
+
+      if (turnServerUrl && turnUsername && turnCredential) {
+        console.log('🔐 Using TURN server from environment variables');
+        iceServers.push({
+          urls: turnServerUrl,
+          username: turnUsername,
+          credential: turnCredential,
+        });
+      } else {
+        console.warn('⚠️ TURN server credentials not configured in .env');
+        console.warn('⚠️ Connections may fail for users behind VPN/NAT/CGNAT');
+        console.warn('⚠️ Add VITE_TURN_SERVER_* variables to .env for production');
+      }
+
+      // Optional: Add secondary TURN server if configured
+      const turnServerUrl2 = import.meta.env.VITE_TURN_SERVER_URL_2;
+      const turnUsername2 = import.meta.env.VITE_TURN_SERVER_USERNAME_2;
+      const turnCredential2 = import.meta.env.VITE_TURN_SERVER_CREDENTIAL_2;
+
+      if (turnServerUrl2 && turnUsername2 && turnCredential2) {
+        iceServers.push({
+          urls: turnServerUrl2,
+          username: turnUsername2,
+          credential: turnCredential2,
+        });
+      }
+
+      console.log(`📡 ICE Servers configured: ${iceServers.length} servers (${iceServers.filter(s => s.urls.toString().includes('turn')).length} TURN)`);
       
       const peerConnection = new RTCPeerConnection({
-        iceServers: [
-          // Multiple STUN servers for better NAT traversal
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-          { urls: "stun:stun2.l.google.com:19302" },
-          { urls: "stun:stun3.l.google.com:19302" },
-          { urls: "stun:stun4.l.google.com:19302" },
-          
-          // ⚠️ ВНИМАНИЕ: Следующие TURN серверы - БЕСПЛАТНЫЕ и НЕНАДЕЖНЫЕ
-          // Используются только для тестирования!
-          // Для продакшн обязательно замените на платный сервис (см. комментарии выше)
-          
-          // Primary TURN servers (Metered - FREE, unreliable)
-          {
-            urls: "turn:openrelay.metered.ca:80",
-            username: "openrelayproject",
-            credential: "openrelayproject",
-          },
-          {
-            urls: "turn:openrelay.metered.ca:443",
-            username: "openrelayproject",
-            credential: "openrelayproject",
-          },
-          {
-            urls: "turn:openrelay.metered.ca:443?transport=tcp",
-            username: "openrelayproject",
-            credential: "openrelayproject",
-          },
-          
-          // Backup TURN servers (Numb - FREE, unreliable)
-          {
-            urls: "turn:numb.viagenie.ca",
-            username: "webrtc@live.com",
-            credential: "muazkh",
-          },
-          {
-            urls: "turn:numb.viagenie.ca:3478?transport=tcp",
-            username: "webrtc@live.com",
-            credential: "muazkh",
-          },
-          
-          // Additional backup TURN servers (Metered - FREE, unreliable)
-          {
-            urls: "turn:relay.metered.ca:80",
-            username: "85d76e46be6d5e65d6e85ba1",
-            credential: "tXUXVrMT8Rbr1w0N",
-          },
-          {
-            urls: "turn:relay.metered.ca:443",
-            username: "85d76e46be6d5e65d6e85ba1",
-            credential: "tXUXVrMT8Rbr1w0N",
-          },
-        ],
+        iceServers,
         // Increased pool size for faster connection establishment
         iceCandidatePoolSize: 20,
         // Try all connection types (direct P2P and relay through TURN)

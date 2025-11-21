@@ -62,6 +62,46 @@ TURN серверы критически важны в следующих сце
 
 ## ✅ Решения для продакшн
 
+### ⚙️ Конфигурация через переменные окружения (.env)
+
+**ВАЖНО:** Все TURN credentials теперь настраиваются через `.env` файл для улучшения безопасности!
+
+**Настройка:**
+
+1. Скопируйте `.env.example` в `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Откройте файл `.env` и обновите TURN server credentials:
+
+```env
+# TURN Server Configuration
+VITE_TURN_SERVER_URL="turn:your-turn-server.com:443"
+VITE_TURN_SERVER_USERNAME="your-username"
+VITE_TURN_SERVER_CREDENTIAL="your-password"
+
+# Optional: Secondary TURN server (for redundancy)
+VITE_TURN_SERVER_URL_2="turn:your-turn-server.com:443?transport=tcp"
+VITE_TURN_SERVER_USERNAME_2="your-username"
+VITE_TURN_SERVER_CREDENTIAL_2="your-password"
+```
+
+3. Перезапустите dev сервер: `npm run dev`
+
+**Преимущества:**
+- ✅ Credentials не хранятся в коде
+- ✅ Легко обновлять без изменения кода
+- ✅ Разные настройки для dev/staging/production
+- ✅ Безопасность: `.env` уже добавлен в `.gitignore`
+
+**Примечание для деплоя:**
+- Для production деплоя настройте эти переменные в настройках вашего хостинга (Vercel, Netlify, и т.д.)
+- **НЕ коммитьте** `.env` файл в git! Файл уже добавлен в `.gitignore`
+- Используйте `.env.example` как шаблон для других разработчиков
+
+---
+
 ### Вариант 1: Платные облачные TURN сервисы (рекомендуется)
 
 #### 1.1. Metered.ca (рекомендуется для начинающих)
@@ -75,29 +115,22 @@ TURN серверы критически важны в следующих сце
 **Настройка:**
 1. Регистрация: [https://www.metered.ca/](https://www.metered.ca/)
 2. Получите credentials из дашборда
-3. Обновите `src/components/VideoCall.tsx`:
+3. Добавьте credentials в `.env` файл:
 
-```typescript
-const peerConnection = new RTCPeerConnection({
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    {
-      urls: [
-        "turn:a.relay.metered.ca:80",
-        "turn:a.relay.metered.ca:80?transport=tcp",
-        "turn:a.relay.metered.ca:443",
-        "turns:a.relay.metered.ca:443?transport=tcp"
-      ],
-      username: "YOUR_METERED_USERNAME",
-      credential: "YOUR_METERED_CREDENTIAL"
-    }
-  ],
-  iceCandidatePoolSize: 20,
-  iceTransportPolicy: 'all',
-  bundlePolicy: 'max-bundle',
-  rtcpMuxPolicy: 'require',
-});
+```env
+VITE_TURN_SERVER_URL="turn:a.relay.metered.ca:443"
+VITE_TURN_SERVER_USERNAME="YOUR_METERED_USERNAME"
+VITE_TURN_SERVER_CREDENTIAL="YOUR_METERED_CREDENTIAL"
+
+# Дополнительный TURN для надежности
+VITE_TURN_SERVER_URL_2="turn:a.relay.metered.ca:443?transport=tcp"
+VITE_TURN_SERVER_USERNAME_2="YOUR_METERED_USERNAME"
+VITE_TURN_SERVER_CREDENTIAL_2="YOUR_METERED_CREDENTIAL"
 ```
+
+4. Перезапустите приложение
+
+**Примечание:** Можно использовать несколько URL в VITE_TURN_SERVER_URL, разделяя их запятыми.
 
 **Цены:** от $0 (50GB) до $99/месяц (1TB)
 
@@ -112,7 +145,13 @@ const peerConnection = new RTCPeerConnection({
 1. Регистрация: [https://xirsys.com/](https://xirsys.com/)
 2. Создайте канал в дашборде
 3. Получите credentials
-4. Аналогично обновите конфигурацию
+4. Добавьте в `.env` файл:
+
+```env
+VITE_TURN_SERVER_URL="turn:your-channel.xirsys.com:443"
+VITE_TURN_SERVER_USERNAME="YOUR_XIRSYS_USERNAME"
+VITE_TURN_SERVER_CREDENTIAL="YOUR_XIRSYS_CREDENTIAL"
+```
 
 **Цены:** от $10/месяц
 
@@ -124,18 +163,19 @@ const peerConnection = new RTCPeerConnection({
 - Отличная поддержка
 
 **Настройка:**
-```javascript
-// Получение эфемерных токенов через Twilio API
-const response = await fetch('https://api.twilio.com/2010-04-01/Accounts/YOUR_ACCOUNT_SID/Tokens.json', {
-  method: 'POST',
-  headers: {
-    'Authorization': 'Basic ' + btoa('YOUR_ACCOUNT_SID:YOUR_AUTH_TOKEN')
-  }
-});
 
-const data = await response.json();
-// Используйте data.ice_servers в конфигурации RTCPeerConnection
+1. Получите TURN credentials через Twilio API
+2. Добавьте в `.env` файл:
+
+```env
+# Twilio предоставляет эфемерные токены, их нужно динамически получать
+# через API и затем использовать. Пример для статических credentials:
+VITE_TURN_SERVER_URL="turn:global.turn.twilio.com:3478"
+VITE_TURN_SERVER_USERNAME="YOUR_TWILIO_USERNAME"
+VITE_TURN_SERVER_CREDENTIAL="YOUR_TWILIO_CREDENTIAL"
 ```
+
+**Примечание:** Для Twilio рекомендуется получать эфемерные токены через их API перед каждым звонком для максимальной безопасности.
 
 **Цены:** pay-as-you-go, ~$0.001 за минуту
 
@@ -148,8 +188,14 @@ const data = await response.json();
 
 **Настройка:**
 1. Регистрация: [https://www.videosdk.live/](https://www.videosdk.live/)
-2. Получите API key
-3. Обновите конфигурацию
+2. Получите TURN credentials
+3. Добавьте в `.env` файл:
+
+```env
+VITE_TURN_SERVER_URL="turn:turn.videosdk.live:3478"
+VITE_TURN_SERVER_USERNAME="YOUR_VIDEOSDK_USERNAME"
+VITE_TURN_SERVER_CREDENTIAL="YOUR_VIDEOSDK_CREDENTIAL"
+```
 
 **Цены:** от бесплатного тарифа
 
@@ -258,26 +304,25 @@ turn-test YOUR_SERVER_IP 3478 username password
 
 **Конфигурация в приложении:**
 
-```typescript
-const peerConnection = new RTCPeerConnection({
-  iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-    {
-      urls: [
-        "turn:YOUR_SERVER_IP:3478",
-        "turn:YOUR_SERVER_IP:3478?transport=tcp",
-        "turns:YOUR_SERVER_IP:5349",
-        "turns:YOUR_SERVER_IP:5349?transport=tcp"
-      ],
-      username: "username",
-      credential: "password"
-    }
-  ],
-  iceCandidatePoolSize: 20,
-  iceTransportPolicy: 'all',
-  bundlePolicy: 'max-bundle',
-  rtcpMuxPolicy: 'require',
-});
+После настройки coturn сервера, добавьте credentials в `.env` файл:
+
+```env
+VITE_TURN_SERVER_URL="turn:YOUR_SERVER_IP:3478"
+VITE_TURN_SERVER_USERNAME="username"
+VITE_TURN_SERVER_CREDENTIAL="password"
+
+# Опционально: добавьте TCP транспорт для надежности
+VITE_TURN_SERVER_URL_2="turn:YOUR_SERVER_IP:3478?transport=tcp"
+VITE_TURN_SERVER_USERNAME_2="username"
+VITE_TURN_SERVER_CREDENTIAL_2="password"
+```
+
+**Для TLS (порт 5349):**
+
+```env
+VITE_TURN_SERVER_URL="turns:YOUR_SERVER_IP:5349"
+VITE_TURN_SERVER_USERNAME="username"
+VITE_TURN_SERVER_CREDENTIAL="password"
 ```
 
 ---
@@ -384,17 +429,45 @@ peerConnection.getStats(null).then(stats => {
 
 ### Рекомендации:
 
-1. **Не храните credentials в коде** - используйте переменные окружения:
+1. **✅ Используйте .env для credentials** - приложение уже настроено для использования переменных окружения:
+   ```env
+   VITE_TURN_SERVER_URL="turn:your-server.com:443"
+   VITE_TURN_SERVER_USERNAME="your-username"
+   VITE_TURN_SERVER_CREDENTIAL="your-password"
+   ```
+   
+   Credentials автоматически читаются из `.env` файла в `VideoCall.tsx`:
    ```javascript
-   const TURN_USERNAME = import.meta.env.VITE_TURN_USERNAME;
-   const TURN_CREDENTIAL = import.meta.env.VITE_TURN_CREDENTIAL;
+   const turnServerUrl = import.meta.env.VITE_TURN_SERVER_URL;
+   const turnUsername = import.meta.env.VITE_TURN_SERVER_USERNAME;
+   const turnCredential = import.meta.env.VITE_TURN_SERVER_CREDENTIAL;
    ```
 
-2. **Используйте временные credentials** - для продакшн генерируйте короткоживущие токены на сервере
+2. **🔒 Защита .env файла:**
+   - `.env` уже добавлен в `.gitignore` - никогда не коммитьте его в git
+   - Используйте `.env.example` как шаблон для команды
+   - Для production настройте переменные окружения в панели хостинга (Vercel, Netlify, etc.)
 
-3. **Ограничьте доступ к TURN** - настройте IP whitelist и rate limiting на coturn сервере
+3. **⏱️ Используйте временные credentials** (advanced):
+   - Для максимальной безопасности генерируйте короткоживущие токены на сервере
+   - Twilio и некоторые другие провайдеры поддерживают эфемерные токены
+   - Регулярно ротируйте credentials
 
-4. **Мониторинг использования** - следите за трафиком и стоимостью
+4. **🛡️ Ограничьте доступ к TURN** (для собственного coturn):
+   - Настройте IP whitelist
+   - Включите rate limiting
+   - Используйте strong passwords или генерируйте их автоматически
+   - Ограничьте max-bps и total-quota в конфигурации coturn
+
+5. **📊 Мониторинг использования:**
+   - Следите за трафиком и стоимостью
+   - Настройте алерты при превышении лимитов
+   - Регулярно проверяйте логи на подозрительную активность
+
+6. **🔄 Для production деплоя:**
+   - Vercel: Settings → Environment Variables → добавьте `VITE_TURN_SERVER_*`
+   - Netlify: Site settings → Build & deploy → Environment → добавьте переменные
+   - Custom VPS: Настройте `.env` файл на сервере с правильными permissions (`chmod 600 .env`)
 
 ---
 
